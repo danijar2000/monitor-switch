@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.monitor-switch-hotkey</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/bin/monitor-switch-hotkey</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart only after a failure: a problem a restart cannot fix ends
+         with success, so it never becomes a restart loop. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <!-- 077: the socket, logs and anything else created stay private. -->
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.monitor-switch/hotkey.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.monitor-switch/hotkey.log</string>
+</dict>
+</plist>

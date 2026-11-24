@@ -1,0 +1,71 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin && rustup component add clippy
+      - name: Tests
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --locked --release --all-targets -- -D warnings
+      - name: Scripts
+        run: zsh -n install.sh && zsh -n scripts/setup-mac.sh
+      - name: Build for Apple silicon and Intel
+        run: |
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
+      - name: Package
+        run: |
+          dir=monitor-switch
+          mkdir -p "$dir/bin"
+          for bin in monitor-switch monitor-switch-hotkey; do
+            lipo -create -output "$dir/bin/$bin" \
+              target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
+            lipo -info "$dir/bin/$bin"
+          done
+          cp -R launchd scripts README.md install.sh install.conf.example "$dir/"
+          sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 > "$dir/VERSION"
+          tar -czf monitor-switch-macos.tar.gz "$dir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: monitor-switch-macos
+          path: monitor-switch-macos.tar.gz
+
+  msrv:
+    runs-on: macos-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.80"
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.80 --profile minimal
+      - run: cargo build --locked --release
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, msrv]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: monitor-switch-macos
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" monitor-switch-macos.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
