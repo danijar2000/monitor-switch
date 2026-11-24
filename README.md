@@ -30,96 +30,45 @@ to sleep and the monitor moves to DisplayPort.
 
 ## Install
 
-Everything is run from the **MacBook**; `install.sh` sets up the Mac mini
-over ssh. You need about 15 minutes and access to both screens.
-
-### 1. Prepare both Macs
-
-On **both** Macs:
-
-1. Turn on **System Settings → General → Sharing → Remote Login** (ssh).
-2. Note the user name and the local host name:
-
-   ```sh
-   whoami                         # e.g. doni
-   scutil --get LocalHostName     # e.g. Daniiars-Mac-mini  →  Daniiars-Mac-mini.local
-   ```
-
-On the **monitor**: open its menu and set **Input Select = Auto**.
-
-### 2. Let the Macs ssh to each other
-
-On the **MacBook** (use your Mac mini's user and name):
-
-```sh
-ssh-keygen -t ed25519            # only if ~/.ssh/id_ed25519 does not exist yet
-ssh-copy-id doni@Daniiars-Mac-mini.local
-ssh doni@Daniiars-Mac-mini.local true   # must log in without a password
-```
-
-On the **Mac mini**, connect once to the MacBook and answer `yes` to its host
-key (the agents refuse unknown host keys; no password is needed afterwards):
-
-```sh
-ssh doni@MacBook-Name.local true
-```
-
-### 3. Install Rust on the MacBook
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-```
-
-Both Macs must have the same CPU architecture (`uname -m`); the MacBook builds
-for both.
-
-### 4. Get the code and fill in `install.conf`
+Pair the keyboard and mouse with the MacBook, set the monitor's **Input
+Select** to **Auto** in its menu, and turn on **Remote Login** on the Mac mini
+(System Settings → General → Sharing). Then on the **MacBook**:
 
 ```sh
 git clone https://github.com/danijar2000/monitor-switch.git
 cd monitor-switch
-cp install.conf.example install.conf
-open -e install.conf
-```
-
-| Setting | What to put |
-|---|---|
-| `MINI` | `user@host.local` of the Mac mini, as in step 2 |
-| `MACBOOK` | `user@host.local` of the MacBook (optional, detected automatically) |
-| `MINI_FROM`, `MACBOOK_FROM` | Where each Mac's agent may connect from: your home network, e.g. `192.168.31.*,fe80::*` (see `ipconfig getifaddr en0` or `en1`) |
-| `DEVICES` | Bluetooth addresses of the keyboard and mouse, keyboard first. Find them in **System Information → Bluetooth** (hold Option and open the Apple menu) |
-| `HDMI_INPUT` | Leave `18` for the MSI PRO MP271A |
-
-### 5. Run the installer
-
-```sh
 ./install.sh
 ```
 
-It runs the tests, builds, copies everything to the Mac mini, installs the
-binaries to `~/bin`, the config to `~/.monitor-switch/config` and the launchd
-agents on both Macs, and lets each agent's key into the other Mac with the
-restrictions above. At the end it checks that each agent reaches the other
-Mac and prints what to fix if not.
+`install.sh` checks everything the install needs and sets up what is missing,
+asking first:
 
-### 6. Allow Bluetooth on each Mac
+| Check | If missing |
+|---|---|
+| Xcode command line tools | opens their installer |
+| Rust | installs it with rustup |
+| Remote Login on the MacBook | turns it on (asks for your password) |
+| `install.conf` | writes it: finds the Mac mini on the network and the paired keyboard and mouse, and allows the home network (`192.168.31.*,fe80::*`) |
+| ssh to the Mac mini without a password | copies your key (asks for the Mac mini's password once) |
+| Mac mini's architecture | stops if it differs from the MacBook's |
+| MacBook's host key on the Mac mini | adds it, taken from the MacBook itself |
 
-On **each** Mac, while you can see its screen:
+Then it runs the tests, builds, installs the programs to `~/bin`, the config
+to `~/.monitor-switch/config` and the launchd agents on both Macs, lets each
+agent's key into the other Mac with the restrictions above, and checks that
+each agent reaches the other Mac. Last, click **Allow** when macOS asks on
+each Mac whether "monitor-switch" may use Bluetooth. Done: press
+**Control+Enter**.
 
-```sh
-~/bin/monitor-switch status
-```
-
-and click **Allow** when macOS asks whether "monitor-switch" may use
-Bluetooth. Done: press **Control+Enter**.
+`./install.sh check` runs only the checks. To change a setting, edit
+`install.conf` (see `install.conf.example`) and run `./install.sh` again.
 
 ### Update and uninstall
 
 - **Update:** `git pull && ./install.sh` on the MacBook. `install.conf` is the
   only place for settings: each install rewrites both Macs' configs from it
   (the previous one is kept as `config.bak`). A changed binary asks for
-  Bluetooth again (step 6).
+  Bluetooth again.
 - **Uninstall:** `./install.sh uninstall` removes the programs, the agents and
   the agents' keys from `authorized_keys` on both Macs; add `--purge` to also
   delete the config, the keys, the logs and the Bluetooth permission. It needs

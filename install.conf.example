@@ -1,4 +1,5 @@
-# Copy to install.conf (kept out of git) and fill in. Plain KEY=value lines;
+# install.sh writes install.conf (kept out of git) when it is missing; or copy
+# this file to install.conf and fill it in. Plain KEY=value lines;
 # the file is read, not run.
 
 # How this MacBook reaches the Mac mini over ssh. The Macs share a monitor and
