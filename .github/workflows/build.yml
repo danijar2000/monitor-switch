@@ -22,7 +22,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --release --all-targets -- -D warnings
       - name: Scripts
-        run: zsh -n install.sh && zsh -n scripts/setup-mac.sh
+        run: zsh -n install.sh && zsh -n get.sh && zsh -n scripts/setup-mac.sh
       - name: Build for Apple silicon and Intel
         run: |
           cargo build --locked --release --target aarch64-apple-darwin
@@ -39,10 +39,14 @@ jobs:
           cp -R launchd scripts README.md install.sh install.conf.example "$dir/"
           sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 > "$dir/VERSION"
           tar -czf monitor-switch-macos.tar.gz "$dir"
+          shasum -a 256 monitor-switch-macos.tar.gz > monitor-switch-macos.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: monitor-switch-macos
-          path: monitor-switch-macos.tar.gz
+          path: |
+            monitor-switch-macos.tar.gz
+            monitor-switch-macos.tar.gz.sha256
+            get.sh
 
   msrv:
     runs-on: macos-latest
@@ -67,5 +71,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" monitor-switch-macos.tar.gz \
+          gh release create "$GITHUB_REF_NAME" monitor-switch-macos.tar.gz monitor-switch-macos.tar.gz.sha256 get.sh \
             --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

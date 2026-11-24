@@ -32,7 +32,40 @@ to sleep and the monitor moves to DisplayPort.
 
 Pair the keyboard and mouse with the MacBook, set the monitor's **Input
 Select** to **Auto** in its menu, and turn on **Remote Login** on the Mac mini
-(System Settings → General → Sharing). Then on the **MacBook**:
+(System Settings → General → Sharing). Then run this in Terminal on the
+**MacBook**:
+
+```sh
+curl -fsSL https://github.com/danijar2000/monitor-switch/releases/latest/download/get.sh | zsh
+```
+
+It downloads the latest release (ready binaries for Apple silicon and Intel,
+checked against its SHA-256), unpacks it into `~/.monitor-switch/installer`
+and runs `install.sh` from there. Nothing to build, no Rust needed.
+
+`install.sh` checks everything the install needs and sets up what is missing,
+asking first:
+
+| Check | If missing |
+|---|---|
+| Remote Login on the MacBook | turns it on (asks for your password) |
+| `install.conf` | writes it: finds the Mac mini on the network and the paired keyboard and mouse, and allows the home network (`192.168.31.*,fe80::*`) |
+| ssh to the Mac mini without a password | copies your key (asks for the Mac mini's password once) |
+| Mac mini's architecture | stops if the binaries do not run on it |
+| MacBook's host key on the Mac mini | adds it, taken from the MacBook itself |
+
+Then it installs the programs to `~/bin`, the config
+to `~/.monitor-switch/config` and the launchd agents on both Macs, lets each
+agent's key into the other Mac with the restrictions above, and checks that
+each agent reaches the other Mac. Last, click **Allow** when macOS asks on
+each Mac whether "monitor-switch" may use Bluetooth. Done: press
+**Control+Enter**.
+
+To change a setting, edit `~/.monitor-switch/installer/install.conf` (see
+`install.conf.example`) and run `~/.monitor-switch/installer/install.sh`
+again; `install.sh check` runs only the checks.
+
+### From source
 
 ```sh
 git clone https://github.com/danijar2000/monitor-switch.git
@@ -40,39 +73,20 @@ cd monitor-switch
 ./install.sh
 ```
 
-`install.sh` checks everything the install needs and sets up what is missing,
-asking first:
-
-| Check | If missing |
-|---|---|
-| Xcode command line tools | opens their installer |
-| Rust | installs it with rustup |
-| Remote Login on the MacBook | turns it on (asks for your password) |
-| `install.conf` | writes it: finds the Mac mini on the network and the paired keyboard and mouse, and allows the home network (`192.168.31.*,fe80::*`) |
-| ssh to the Mac mini without a password | copies your key (asks for the Mac mini's password once) |
-| Mac mini's architecture | stops if it differs from the MacBook's |
-| MacBook's host key on the Mac mini | adds it, taken from the MacBook itself |
-
-Then it runs the tests, builds, installs the programs to `~/bin`, the config
-to `~/.monitor-switch/config` and the launchd agents on both Macs, lets each
-agent's key into the other Mac with the restrictions above, and checks that
-each agent reaches the other Mac. Last, click **Allow** when macOS asks on
-each Mac whether "monitor-switch" may use Bluetooth. Done: press
-**Control+Enter**.
-
-`./install.sh check` runs only the checks. To change a setting, edit
-`install.conf` (see `install.conf.example`) and run `./install.sh` again.
+In a source checkout `install.sh` also checks for the Xcode command line
+tools and Rust (installing them if you agree), runs the tests and builds the
+binaries.
 
 ### Update and uninstall
 
-- **Update:** `git pull && ./install.sh` on the MacBook. `install.conf` is the
-  only place for settings: each install rewrites both Macs' configs from it
-  (the previous one is kept as `config.bak`). A changed binary asks for
-  Bluetooth again.
-- **Uninstall:** `./install.sh uninstall` removes the programs, the agents and
-  the agents' keys from `authorized_keys` on both Macs; add `--purge` to also
-  delete the config, the keys, the logs and the Bluetooth permission. It needs
-  only `MINI` in `install.conf`.
+- **Update:** run the same `curl … | zsh` line again; it keeps your
+  `install.conf`. Each install rewrites both Macs' configs from it (the
+  previous one is kept as `config.bak`). A changed binary asks for Bluetooth
+  again.
+- **Uninstall:** `~/.monitor-switch/installer/install.sh uninstall` removes
+  the programs, the agents and the agents' keys from `authorized_keys` on both
+  Macs; add `--purge` to also delete the config, the keys, the logs and the
+  Bluetooth permission. Then `rm -rf ~/.monitor-switch/installer`.
 
 ## Use
 

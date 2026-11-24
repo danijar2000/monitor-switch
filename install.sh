@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Installs monitor-switch on this MacBook and on the Mac mini.
 #
-#   ./install.sh                     check and set up what is missing, then build and install on both Macs
+#   ./install.sh                     check and set up what is missing, then install on both Macs
 #   ./install.sh check               only check and set up the prerequisites
 #   ./install.sh uninstall [--purge] remove from both Macs (--purge: with config, keys and logs)
 #
@@ -13,10 +13,19 @@
 # the single source of the settings: every install rewrites
 # ~/.monitor-switch/config on both Macs from it (the previous one is kept as
 # config.bak).
+#
+# Next to ready binaries in bin/ (the release archive, which get.sh
+# downloads) it installs those; in a source checkout it builds them first.
 set -eu -o pipefail
 setopt extended_glob
 umask 077
 cd "${0:A:h}"
+# Ready universal binaries from the release archive, or a source checkout.
+if [[ -x bin/monitor-switch && -x bin/monitor-switch-hotkey ]]; then
+  binaries=bin
+else
+  binaries=target/release
+fi
 
 if [[ -t 1 ]]; then
   bold=$'\e[1m' green=$'\e[32m' yellow=$'\e[33m' red=$'\e[31m' plain=$'\e[0m'
@@ -180,6 +189,10 @@ ssh_mini() { ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=y
 
 check_tools() {
   step "This Mac"
+  if [[ $binaries == bin ]]; then
+    ok "ready binaries ($(<VERSION 2>/dev/null || echo release), $(lipo -archs bin/monitor-switch))"
+    return
+  fi
   xcode-select -p >/dev/null 2>&1 || {
     xcode-select --install 2>/dev/null || true
     die "Xcode command line tools are missing: finish the installer that just opened, then run ./install.sh again"
@@ -243,8 +256,14 @@ check_ssh_to_mini() {
 check_mini() {
   local remote_arch
   remote_arch=$(ssh_mini uname -m) || die "cannot run commands on $MINI"
-  [[ $remote_arch == $(uname -m) ]] || die "the Mac mini is $remote_arch, this Mac is $(uname -m): both must be the same"
-  ok "same CPU architecture ($remote_arch)"
+  if [[ $binaries == bin ]]; then
+    [[ " $(lipo -archs bin/monitor-switch) " == *" $remote_arch "* ]] \
+      || die "the binaries do not run on the Mac mini ($remote_arch)"
+    ok "the binaries run on the Mac mini ($remote_arch)"
+  else
+    [[ $remote_arch == $(uname -m) ]] || die "the Mac mini is $remote_arch, this Mac is $(uname -m): both must be the same"
+    ok "same CPU architecture ($remote_arch)"
+  fi
   # The Mac mini's agent refuses unknown host keys. This Mac's own key is
   # known here for certain, so put exactly that one into the Mac mini's
   # known_hosts instead of trusting whatever answers on the network.
@@ -297,9 +316,11 @@ fi
 
 # ---------------------------------------------------------------- install
 
-step "Building"
-cargo test --release --locked --quiet
-cargo build --release --locked
+if [[ $binaries == target/release ]]; then
+  step "Building"
+  cargo test --release --locked --quiet
+  cargo build --release --locked
+fi
 
 stage=$(mktemp -d)
 remote=
@@ -315,7 +336,7 @@ trap cleanup EXIT
 trap failed ZERR
 remote=$(ssh_mini mktemp -d)
 
-cp target/release/monitor-switch target/release/monitor-switch-hotkey launchd/*.plist scripts/setup-mac.sh "$stage/"
+cp "$binaries/monitor-switch" "$binaries/monitor-switch-hotkey" launchd/*.plist scripts/setup-mac.sh "$stage/"
 printf 'role = macbook\npeer_ssh = %s\ndevices = %s\n' "$MINI" "${conf[DEVICES]}" > "$stage/config.macbook"
 printf 'role = mini\npeer_ssh = %s\ndevices = %s\nhdmi_input = %s\n' \
   "${conf[MACBOOK]}" "${conf[DEVICES]}" "${conf[HDMI_INPUT]}" > "$stage/config.mini"
