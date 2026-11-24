@@ -2,13 +2,13 @@
 # this file to install.conf and fill it in. Plain KEY=value lines;
 # the file is read, not run.
 
-# How this MacBook reaches the Mac mini over ssh. The Macs share a monitor and
-# so a network: its .local name needs no VPN (add its host key to known_hosts).
+# ssh destinations of the two Macs. The Macs share a monitor and so a
+# network: their .local names need no VPN. install.sh runs on either Mac and
+# finds out which one it is on; the line for that Mac may be left out
+# ($USER@<LocalHostName>.local), the other Mac's line is required. With
+# Tailscale SSH on the MacBook its Tailscale address cannot be used.
 MINI=user@mac-mini.local
-
-# How the Mac mini reaches this MacBook. Defaults to $USER@<LocalHostName>.local;
-# with Tailscale SSH enabled on the MacBook its Tailscale address cannot be used.
-#MACBOOK=user@macbook.local
+MACBOOK=user@macbook.local
 
 # The addresses each agent's ssh key is accepted from (sshd patterns, "*"
 # matches anything). The key already runs only the peer commands; this list

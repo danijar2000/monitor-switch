@@ -30,10 +30,10 @@ to sleep and the monitor moves to DisplayPort.
 
 ## Install
 
-Pair the keyboard and mouse with the MacBook, set the monitor's **Input
-Select** to **Auto** in its menu, and turn on **Remote Login** on the Mac mini
-(System Settings → General → Sharing). Then run this in Terminal on the
-**MacBook**:
+Pair the keyboard and mouse with the Mac you run it on, set the monitor's **Input
+Select** to **Auto** in its menu, and turn on **Remote Login**
+on both Macs (System Settings → General → Sharing). Then run this in Terminal
+on **either Mac**; it installs on both:
 
 ```sh
 curl -fsSL https://github.com/danijar2000/monitor-switch/releases/latest/download/get.sh | zsh
@@ -48,11 +48,12 @@ asking first:
 
 | Check | If missing |
 |---|---|
-| Remote Login on the MacBook | turns it on (asks for your password) |
-| `install.conf` | writes it: finds the Mac mini on the network and the paired keyboard and mouse, and allows the home network (`192.168.31.*,fe80::*`) |
-| ssh to the Mac mini without a password | copies your key (asks for the Mac mini's password once) |
-| Mac mini's architecture | stops if the binaries do not run on it |
-| MacBook's host key on the Mac mini | adds it, taken from the MacBook itself |
+| Which Mac this is | from `install.conf`, the role already installed, or the model; asks if unsure |
+| Remote Login on this Mac | turns it on (asks for your password) |
+| `install.conf` | writes it: finds the other Mac on the network and the paired keyboard and mouse, and allows the home network (`192.168.31.*,fe80::*`) |
+| ssh to the other Mac without a password | copies your key (asks for its password once) |
+| The other Mac | stops if the binaries do not run on it, or if it is installed with the same role |
+| This Mac's host key on the other Mac | adds it, taken from this Mac itself |
 
 Then it installs the programs to `~/bin`, the config
 to `~/.monitor-switch/config` and the launchd agents on both Macs, lets each

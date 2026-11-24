@@ -36,6 +36,14 @@ jobs:
               target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
             lipo -info "$dir/bin/$bin"
           done
+          # lipo keeps each slice's linker signature, which does not bind the
+          # embedded Info.plist; without it macOS silently refuses Bluetooth.
+          codesign -s - -f -i local.monitor-switch "$dir/bin/monitor-switch"
+          codesign -s - -f -i local.monitor-switch-hotkey "$dir/bin/monitor-switch-hotkey"
+          codesign -dv "$dir/bin/monitor-switch" 2>&1 | tee /dev/stderr \
+            | grep -q '^Identifier=local.monitor-switch$'
+          codesign -dv "$dir/bin/monitor-switch" 2>&1 | grep -q '^Info.plist entries='
+          codesign --verify --strict "$dir/bin/monitor-switch" "$dir/bin/monitor-switch-hotkey"
           cp -R launchd scripts README.md install.sh install.conf.example "$dir/"
           sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 > "$dir/VERSION"
           tar -czf monitor-switch-macos.tar.gz "$dir"

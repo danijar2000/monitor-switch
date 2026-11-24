@@ -80,7 +80,7 @@ install_from() {
   local src=$1 label plist tries
   mkdir -p "$HOME/bin" "$HOME/Library/LaunchAgents" "$STATE"
   chmod 700 "$STATE"
-  chmod 600 "$STATE"/*(N) 2>/dev/null || true
+  chmod 600 "$STATE"/*(.N) 2>/dev/null || true
   stop_agents
 
   for label in ${(k)PROGRAM}; do
