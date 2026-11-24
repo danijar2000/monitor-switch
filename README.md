@@ -30,43 +30,137 @@ to sleep and the monitor moves to DisplayPort.
 
 ## Install
 
-Requirements: Rust 1.80+, both Macs on the same CPU architecture, ssh from the
-MacBook to the Mac mini, Remote Login on the MacBook, each Mac's host key
-already in the other's `~/.ssh/known_hosts` (connect once by hand and check
-the fingerprint; the agents refuse unknown host keys), and the monitor's
-Input Select set to Auto.
+Everything is run from the **MacBook**; `install.sh` sets up the Mac mini
+over ssh. You need about 15 minutes and access to both screens.
+
+### 1. Prepare both Macs
+
+On **both** Macs:
+
+1. Turn on **System Settings → General → Sharing → Remote Login** (ssh).
+2. Note the user name and the local host name:
+
+   ```sh
+   whoami                         # e.g. doni
+   scutil --get LocalHostName     # e.g. Daniiars-Mac-mini  →  Daniiars-Mac-mini.local
+   ```
+
+On the **monitor**: open its menu and set **Input Select = Auto**.
+
+### 2. Let the Macs ssh to each other
+
+On the **MacBook** (use your Mac mini's user and name):
 
 ```sh
-cp install.conf.example install.conf   # fill in addresses and devices
+ssh-keygen -t ed25519            # only if ~/.ssh/id_ed25519 does not exist yet
+ssh-copy-id doni@Daniiars-Mac-mini.local
+ssh doni@Daniiars-Mac-mini.local true   # must log in without a password
+```
+
+On the **Mac mini**, connect once to the MacBook and answer `yes` to its host
+key (the agents refuse unknown host keys; no password is needed afterwards):
+
+```sh
+ssh doni@MacBook-Name.local true
+```
+
+### 3. Install Rust on the MacBook
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
+
+Both Macs must have the same CPU architecture (`uname -m`); the MacBook builds
+for both.
+
+### 4. Get the code and fill in `install.conf`
+
+```sh
+git clone https://github.com/danijar2000/monitor-switch.git
+cd monitor-switch
+cp install.conf.example install.conf
+open -e install.conf
+```
+
+| Setting | What to put |
+|---|---|
+| `MINI` | `user@host.local` of the Mac mini, as in step 2 |
+| `MACBOOK` | `user@host.local` of the MacBook (optional, detected automatically) |
+| `MINI_FROM`, `MACBOOK_FROM` | Where each Mac's agent may connect from: your home network, e.g. `192.168.31.*,fe80::*` (see `ipconfig getifaddr en0` or `en1`) |
+| `DEVICES` | Bluetooth addresses of the keyboard and mouse, keyboard first. Find them in **System Information → Bluetooth** (hold Option and open the Apple menu) |
+| `HDMI_INPUT` | Leave `18` for the MSI PRO MP271A |
+
+### 5. Run the installer
+
+```sh
 ./install.sh
 ```
 
-`install.sh` runs the tests, builds, copies everything to the Mac mini, then
-installs the binaries to `~/bin`, the config to `~/.monitor-switch/config` and
-the launchd agents on both Macs, and lets each agent's key into the other Mac
-with the restrictions above. `install.conf` is the only place for settings:
-each install rewrites both configs from it, keeping the previous one as
-`config.bak`. Then, on each Mac while
-you can see its screen, run `~/bin/monitor-switch status` and allow Bluetooth.
+It runs the tests, builds, copies everything to the Mac mini, installs the
+binaries to `~/bin`, the config to `~/.monitor-switch/config` and the launchd
+agents on both Macs, and lets each agent's key into the other Mac with the
+restrictions above. At the end it checks that each agent reaches the other
+Mac and prints what to fix if not.
 
-Uninstall with `./install.sh uninstall` (it also removes the agents' keys
-from `authorized_keys`); add `--purge` to delete the config, the agent keys,
-the logs and the Bluetooth permission too. Uninstall needs only `MINI` in
-`install.conf`.
+### 6. Allow Bluetooth on each Mac
+
+On **each** Mac, while you can see its screen:
+
+```sh
+~/bin/monitor-switch status
+```
+
+and click **Allow** when macOS asks whether "monitor-switch" may use
+Bluetooth. Done: press **Control+Enter**.
+
+### Update and uninstall
+
+- **Update:** `git pull && ./install.sh` on the MacBook. `install.conf` is the
+  only place for settings: each install rewrites both Macs' configs from it
+  (the previous one is kept as `config.bak`). A changed binary asks for
+  Bluetooth again (step 6).
+- **Uninstall:** `./install.sh uninstall` removes the programs, the agents and
+  the agents' keys from `authorized_keys` on both Macs; add `--purge` to also
+  delete the config, the keys, the logs and the Bluetooth permission. It needs
+  only `MINI` in `install.conf`.
 
 ## Use
 
-- **Control+Enter** (or the combination in `~/.monitor-switch/hotkey`) on either Mac — switch. Pressing it on the Mac that has
-  neither device pulls them over; if they were left on neither Mac, it pairs
-  them right there.
-- `~/bin/monitor-switch status` — what the agent sees.
-- `~/.monitor-switch/hotkey` — the combination (`ctrl+enter`, `ctrl+alt+cmd+m`,
-  `shift+f12`…); run `launchctl kickstart -k gui/$(id -u)/local.monitor-switch-hotkey`
-  after changing it. While registered, the combination no longer reaches apps.
-- Logs: `~/.monitor-switch/agent.log` and `hotkey.log`. Past 512 KB the
-  agent's log is moved to `agent.log.1` hourly, the hotkey's when it starts.
-- While a switch runs, `status` answers `busy`; pressing the hotkey on both
-  Macs at once leaves everything where it was.
+### Switching
+
+Press **Control+Enter** on the Mac you are using. In about 9–12 seconds the
+monitor, keyboard and mouse are on the other Mac; a notification says if
+anything went wrong.
+
+- Pressing it on the Mac that has **neither** device pulls them over — handy
+  when the keyboard is on the other Mac. You can also run
+  `~/bin/monitor-switch switch` from a terminal or over ssh.
+- If the devices were left on neither Mac, the hotkey pairs them right there.
+- Pressing it on both Macs at once leaves everything where it was.
+- Right after a switch the devices need about 14 s before they can leave
+  again; a switch pressed sooner waits, then runs.
+
+### Checking what is going on
+
+```sh
+~/bin/monitor-switch status     # role, keyboard and mouse state, monitor input; "busy" during a switch
+tail -f ~/.monitor-switch/agent.log ~/.monitor-switch/hotkey.log
+```
+
+Logs over 512 KB are moved to `agent.log.1` (hourly) and `hotkey.log.1`
+(when the hotkey program starts).
+
+### Changing the hotkey
+
+```sh
+echo ctrl+alt+cmd+m > ~/.monitor-switch/hotkey
+launchctl kickstart -k gui/$(id -u)/local.monitor-switch-hotkey
+```
+
+Modifiers: `ctrl`, `alt` (`opt`), `cmd`, `shift`; keys: `a`–`z`, `0`–`9`,
+`f1`–`f12`, `enter` (`return`), `tab`, `space`, `esc`. Set it on each Mac. While registered,
+the combination no longer reaches apps.
 
 ## Limits and troubleshooting
 
