@@ -1,8 +1,9 @@
 # Copy to install.conf (kept out of git) and fill in. Plain KEY=value lines;
 # the file is read, not run.
 
-# How this MacBook reaches the Mac mini over ssh.
-MINI=user@100.64.0.2
+# How this MacBook reaches the Mac mini over ssh. The Macs share a monitor and
+# so a network: its .local name needs no VPN (add its host key to known_hosts).
+MINI=user@mac-mini.local
 
 # How the Mac mini reaches this MacBook. Defaults to $USER@<LocalHostName>.local;
 # with Tailscale SSH enabled on the MacBook its Tailscale address cannot be used.

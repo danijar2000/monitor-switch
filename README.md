@@ -80,9 +80,10 @@ the logs and the Bluetooth permission too. Uninstall needs only `MINI` in
   ten seconds.
 - **The devices stay about 14 s on a Mac after they arrive** before macOS
   will unpair them; a switch pressed sooner waits, then runs.
-- **Another network:** the Mac mini reaches the MacBook by its `.local` name,
-  which works only on the same local network. With Tailscale SSH turned off on
-  the MacBook, set `MACBOOK` in `install.conf` to its Tailscale address instead.
+- **No VPN needed:** the Macs share a monitor, so they share a network too;
+  both reach each other by their `.local` names (`MINI` and `MACBOOK` in
+  `install.conf`). List each Mac's LAN and link-local addresses in
+  `MINI_FROM`/`MACBOOK_FROM`.
 
 ## Development
 
