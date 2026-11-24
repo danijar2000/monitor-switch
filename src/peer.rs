@@ -95,10 +95,24 @@ impl Call {
                     .into_iter()
                     .find(|text| !text.is_empty())
                     .unwrap_or_else(|| format!("ssh exited with {status}"));
-                Err(Failure { stdout, reason })
+                Err(Failure { stdout, reason: explain(reason) })
             }
             None => Err(Failure { stdout, reason: "no answer in time".into() }),
         }
+    }
+}
+
+/// Adds what to check when the other Mac refuses this agent's key: the
+/// connection worked, so it is the address list of its authorized_keys entry
+/// (or a missing entry), not the network.
+fn explain(reason: String) -> String {
+    if reason.contains("Permission denied (publickey") {
+        format!(
+            "{reason} — the other Mac refused this Mac's key: is this Mac's address \
+             in MINI_FROM/MACBOOK_FROM in install.conf? Rerun ./install.sh after changing it"
+        )
+    } else {
+        reason
     }
 }
 
@@ -113,4 +127,17 @@ fn is_main_thread() -> bool {
 /// Starts a call and waits for it.
 pub fn call(peer: &str, command: &str, timeout: Duration) -> Result<String, Failure> {
     start(peer, command, timeout)?.wait()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::explain;
+
+    #[test]
+    fn refused_key_gets_a_hint() {
+        let refused = explain("u@h: Permission denied (publickey,password).".into());
+        assert!(refused.starts_with("u@h: Permission denied"));
+        assert!(refused.contains("MINI_FROM/MACBOOK_FROM"));
+        assert_eq!(explain("no answer in time".into()), "no answer in time");
+    }
 }

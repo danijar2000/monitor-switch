@@ -9,13 +9,16 @@ MINI=user@mac-mini.local
 # with Tailscale SSH enabled on the MacBook its Tailscale address cannot be used.
 #MACBOOK=user@macbook.local
 
-# The addresses each agent's ssh key is accepted from. List each Mac's exact
-# addresses (its Tailscale address, a DHCP-reserved LAN address, and for a
-# .local name its link-local IPv6 address, also as "fe80::…%*", the form sshd
-# may see it in); a whole subnet would let any
-# device on it use a stolen key. MACBOOK_FROM defaults to any address.
-MINI_FROM="100.64.0.2,192.168.1.20,fe80::1234:5678:9abc:def0"
-#MACBOOK_FROM="100.64.0.1,192.168.1.10"
+# The addresses each agent's ssh key is accepted from (sshd patterns, "*"
+# matches anything). The key already runs only the peer commands; this list
+# just keeps it to the home network. Exact addresses break whenever the router
+# restarts and hands out new ones, so prefer the LAN with a wildcard plus
+# link-local IPv6, which covers the .local names in any form sshd sees them:
+#   "192.168.31.*,fe80::*"
+# Exact addresses are stricter but need a DHCP reservation on the router.
+# MACBOOK_FROM defaults to any address.
+MINI_FROM="192.168.1.*,fe80::*"
+#MACBOOK_FROM="192.168.1.*,fe80::*"
 
 # Bluetooth addresses to hand over, keyboard first (see System Information > Bluetooth).
 DEVICES="AA:BB:CC:DD:EE:01, AA:BB:CC:DD:EE:02"

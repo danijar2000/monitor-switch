@@ -82,8 +82,13 @@ the logs and the Bluetooth permission too. Uninstall needs only `MINI` in
   will unpair them; a switch pressed sooner waits, then runs.
 - **No VPN needed:** the Macs share a monitor, so they share a network too;
   both reach each other by their `.local` names (`MINI` and `MACBOOK` in
-  `install.conf`). List each Mac's LAN and link-local addresses in
-  `MINI_FROM`/`MACBOOK_FROM`.
+  `install.conf`), so a new address from the router does not matter for
+  finding them.
+- **"Permission denied (publickey…)" after the router restarted:** the Mac
+  that refuses checks the other's address against `MINI_FROM`/`MACBOOK_FROM`.
+  Allow the home network rather than exact addresses
+  (`MINI_FROM="192.168.31.*,fe80::*"`) and run `./install.sh` again; or
+  reserve each Mac's address on the router and keep exact addresses.
 
 ## Development
 
