@@ -4,6 +4,9 @@
 //! A Magic Keyboard or Magic Mouse remembers a single host. To move it, the
 //! Mac that has it removes the pairing (`begin_release`), which makes the
 //! device pairable again, and the other Mac pairs and connects (`take`).
+//! Only dropping the connection is not enough: a device that was not told
+//! over a live link that it is unpaired keeps waiting for its old host and
+//! ignores the other Mac until it is switched off and on.
 //! Everything here must run on the thread that turns the run loop (`spin`).
 
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -241,18 +244,29 @@ impl Device {
     /// Keeps trying until `timeout`, because a device needs a few seconds
     /// after the other Mac released it before it accepts a new host. No step
     /// waits past the deadline.
-    pub fn take(&self, timeout: Duration) -> Result<(), String> {
+    ///
+    /// A Magic Mouse that lost its host while lying still dozes off and does
+    /// not answer a pairing until it is moved. Attempts are therefore short,
+    /// so a mouse woken halfway is caught at once, and `on_no_answer` is
+    /// called once, after the first attempt that got no answer, so the user
+    /// can be asked to move it.
+    pub fn take(&self, timeout: Duration, on_no_answer: &mut dyn FnMut()) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         let left = || deadline.saturating_duration_since(Instant::now()).as_secs_f64();
         let mut last_error = String::from("no time to try");
+        let mut asked = false;
         while left() > 0.0 {
             if self.is_paired() && self.is_usable() {
                 return Ok(());
             }
             if !self.is_paired() {
-                let result = self.pair_once(left().min(15.0));
+                let result = self.pair_once(left().min(PAIR_ATTEMPT));
                 if result != 0 {
                     last_error = format!("pairing failed ({})", io_return(result));
+                    if result == PAIR_PENDING && !asked {
+                        asked = true;
+                        on_no_answer();
+                    }
                 } else if self.wait_usable(left().min(8.0)) {
                     // bluetoothd finished the connection it began with the pairing.
                     return Ok(());
@@ -295,6 +309,10 @@ fn io_return(code: i32) -> String {
 }
 
 // ---- IOBluetoothDevicePair delegate ---------------------------------------
+
+/// Longest single pairing attempt, in seconds. A device that answers pairs
+/// in one or two.
+const PAIR_ATTEMPT: f64 = 6.0;
 
 /// Sentinel: the pairing has not reported a result yet.
 const PAIR_PENDING: i32 = i32::MIN;

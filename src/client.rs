@@ -27,8 +27,10 @@ pub fn timeout(command: &str) -> Duration {
     }
 }
 
-/// Sends `command` and returns the lines before the final `ok`.
-pub fn request(command: &str) -> Result<Vec<String>, String> {
+/// Sends `command` and returns every line of the answer, the verdict line
+/// included; a failure answer keeps the lines before its `error:`.
+/// `Err` only when there is no answer at all.
+pub fn answer(command: &str) -> Result<Vec<String>, String> {
     let mut stream = UnixStream::connect(config::socket_path())
         .map_err(|error| format!("the agent is not running ({error})"))?;
     stream
@@ -45,7 +47,7 @@ pub fn request(command: &str) -> Result<Vec<String>, String> {
         })?;
         lines.push(line);
     }
-    finish(lines)
+    Ok(lines)
 }
 
 /// Splits the answer into its body and verdict.
@@ -62,11 +64,13 @@ fn finish(mut lines: Vec<String>) -> Result<Vec<String>, String> {
 
 /// Runs a command from the terminal, printing what the agent says.
 pub fn run(command: &str) -> Result<(), String> {
-    let lines = request(command)?;
+    let mut lines = answer(command)?;
+    let verdict = finish(lines.clone());
+    lines.pop();
     for line in lines {
         println!("{line}");
     }
-    Ok(())
+    verdict.map(|_| ())
 }
 
 #[cfg(test)]

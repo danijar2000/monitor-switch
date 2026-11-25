@@ -160,9 +160,12 @@ fn handle(mut stream: TcpStream, secret: &[u8]) {
     }
     // The answer may take minutes (`arrive`); the caller has its own deadline.
     let _ = stream.set_write_timeout(Some(client::timeout(command)));
-    let lines = match client::request(command) {
+    // The lines are passed on as they are, so a failed `arrive` still tells
+    // the caller (in its `took:` line) which devices it got.
+    let lines = match client::answer(command) {
+        Ok(lines) if lines.last().is_some_and(|last| last == "ok" || last.starts_with("error: ")) => lines,
         Ok(mut lines) => {
-            lines.push("ok".into());
+            lines.push("error: the agent stopped before finishing its answer".into());
             lines
         }
         Err(reason) => vec![format!("error: {reason}")],

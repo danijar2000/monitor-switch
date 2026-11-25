@@ -58,6 +58,10 @@ const CONTACT_SPACING: Duration = Duration::from_millis(6000);
 /// How long the devices may take to be fully unpaired here.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(6);
 
+/// How long a release that missed `RELEASE_TIMEOUT` may still take to finish
+/// before the devices are taken back.
+const LATE_RELEASE: Duration = Duration::from_secs(10);
+
 /// A queued switch older than this is dropped instead of acted on late.
 const STALE_REQUEST: Duration = Duration::from_secs(10);
 
@@ -333,15 +337,31 @@ fn spawn_detached(command: &mut Command) {
     }
 }
 
+/// The local time of day, for the log.
+fn clock() -> String {
+    Command::new("date")
+        .arg("+%F %T")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
 /// Runs one request and always ends the answer with `ok` or `error: …`.
 fn serve(config: &Config, request: Request) {
     let mut out = Output(request.reply);
     let command = request.command.as_str();
-    eprintln!("command: {command}");
+    eprintln!(
+        "command: {command} at {} (waited {:.1}s)",
+        clock(),
+        request.received.elapsed().as_secs_f64()
+    );
     // A hand-changing request claimed BUSY when it was accepted; it is
     // released here once the request has run or been dropped.
     let changes_hands = matches!(command, "switch" | "handover" | "arrive");
-    if changes_hands && request.received.elapsed() > STALE_REQUEST {
+    // `arrive` is never dropped: the other Mac has already let go of the
+    // devices and waits for this one to take them, so dropping it would
+    // leave them on neither Mac (this happens when this Mac was asleep).
+    if changes_hands && command != "arrive" && request.received.elapsed() > STALE_REQUEST {
         BUSY.store(false, Ordering::SeqCst);
         out.line("error: dropped: the request waited too long");
         return;
@@ -432,7 +452,9 @@ fn take_devices(addresses: &[String], out: &mut Output) -> Result<(), String> {
                 bt::spin(0.2);
             }
         }
-        match device.take(TAKE_TIMEOUT) {
+        let name = device.name();
+        let mut ask_to_wake = || notify(&format!("Move or click {name} to wake it"));
+        match device.take(TAKE_TIMEOUT, &mut ask_to_wake) {
             Ok(()) => {
                 out.line(&format!("{} connected", device.address));
                 took.push(device.address);
@@ -468,6 +490,13 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
     })?;
 
     if let Err(error) = release(&devices, out) {
+        // bluetoothd still carries out the unpairing it was asked for. Taking
+        // the devices back now would look fine, and then that late unpairing
+        // would drop them: let it finish first.
+        let deadline = Instant::now() + LATE_RELEASE;
+        while Instant::now() < deadline && devices.iter().any(bt::Device::is_paired) {
+            bt::spin(0.1);
+        }
         out.line("taking the devices back");
         let _ = take_devices(&config.devices, out);
         return Err(error);
