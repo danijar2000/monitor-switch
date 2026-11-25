@@ -22,6 +22,8 @@ fn main() {
     <string>{version}</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>monitor-switch moves the keyboard and mouse to the Mac shown on the monitor.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>monitor-switch talks to your other Mac over the home network to hand over the keyboard, mouse and monitor.</string>
 </dict>
 </plist>
 "#

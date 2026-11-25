@@ -14,7 +14,7 @@ monitor, keyboard and mouse are on the other one.
 |---|---|
 | `monitor-switch agent` | Background agent on each Mac (launchd). Does all Bluetooth work: macOS grants Bluetooth only to a process launchd started, never to a shell or ssh session. |
 | `monitor-switch-hotkey` | Registers the global hotkey and runs `monitor-switch switch`. A separate program, so changing it never resets the Bluetooth permission. |
-| ssh between the Macs | The agents call each other with `ping`, `held`, `arrive`, `handover`, `status`. Each agent has its own key (`~/.monitor-switch/peer_key`), which the other Mac accepts only for exactly those commands (`ssh-gate`) and only from the addresses in `install.conf`. |
+| HTTP between the Macs | The agents call each other on port 47811 with `ping`, `held`, `arrive`, `handover`, `status`. Every call is signed with a secret both Macs share (`~/.monitor-switch/peer_secret`, HMAC-SHA256 over the command, the time and a random nonce): a call with a wrong signature, an old time or a reused signature is refused, and only home-network addresses are served. They find each other by their `.local` names, so new addresses from the router do not matter. |
 
 A switch: the Mac holding the devices checks the other answers, unpairs them
 and waits until they are free, then asks the other Mac to `arrive` — pair them
@@ -31,9 +31,11 @@ to sleep and the monitor moves to DisplayPort.
 ## Install
 
 Pair the keyboard and mouse with the Mac you run it on, set the monitor's **Input
-Select** to **Auto** in its menu, and turn on **Remote Login**
-on both Macs (System Settings → General → Sharing). Then run this in Terminal
-on **either Mac**; it installs on both:
+Select** to **Auto** in its menu, and turn on **Remote Login** on the
+**other** Mac (System Settings → General → Sharing) — the installer uses ssh
+once to install there; switching itself does not need it, so you may turn it
+off afterwards. Then run this in Terminal on **either Mac**; it installs on
+both:
 
 ```sh
 curl -fsSL https://github.com/danijar2000/monitor-switch/releases/latest/download/get.sh | zsh
@@ -49,16 +51,14 @@ asking first:
 | Check | If missing |
 |---|---|
 | Which Mac this is | from `install.conf`, the role already installed, or the model; asks if unsure |
-| Remote Login on this Mac | turns it on (asks for your password) |
-| `install.conf` | writes it: finds the other Mac on the network and the paired keyboard and mouse, and allows the home network (`192.168.31.*,fe80::*`) |
+| `install.conf` | writes it: finds the other Mac on the network and the paired keyboard and mouse |
 | ssh to the other Mac without a password | copies your key (asks for its password once) |
 | The other Mac | stops if the binaries do not run on it, or if it is installed with the same role |
-| This Mac's host key on the other Mac | adds it, taken from this Mac itself |
 
 Then it installs the programs to `~/bin`, the config
-to `~/.monitor-switch/config` and the launchd agents on both Macs, lets each
-agent's key into the other Mac with the restrictions above, and checks that
-each agent reaches the other Mac. Last, click **Allow** when macOS asks on
+to `~/.monitor-switch/config` and the launchd agents on both Macs, puts the same
+new secret on both, and checks that each agent reaches the other Mac (click
+**Allow** if macOS asks whether "monitor-switch" may use the local network). Last, click **Allow** when macOS asks on
 each Mac whether "monitor-switch" may use Bluetooth. Done: press
 **Control+Enter**.
 
@@ -85,8 +85,8 @@ binaries.
   previous one is kept as `config.bak`). A changed binary asks for Bluetooth
   again.
 - **Uninstall:** `~/.monitor-switch/installer/install.sh uninstall` removes
-  the programs, the agents and the agents' keys from `authorized_keys` on both
-  Macs; add `--purge` to also delete the config, the keys, the logs and the
+  the programs and the agents on both
+  Macs; add `--purge` to also delete the config, the shared secret, the logs and the
   Bluetooth permission. Then `rm -rf ~/.monitor-switch/installer`.
 
 ## Use
@@ -142,16 +142,19 @@ the combination no longer reaches apps.
   both reach each other by their `.local` names (`MINI` and `MACBOOK` in
   `install.conf`), so a new address from the router does not matter for
   finding them.
-- **"Permission denied (publickey…)" after the router restarted:** the Mac
-  that refuses checks the other's address against `MINI_FROM`/`MACBOOK_FROM`.
-  Allow the home network rather than exact addresses
-  (`MINI_FROM="192.168.31.*,fe80::*"`) and run `./install.sh` again; or
-  reserve each Mac's address on the router and keep exact addresses.
+- **"cannot connect to … (No route to host)":** macOS has not let the agent
+  on the local network. Allow **monitor-switch** in System Settings → Privacy &
+  Security → Local Network (on the Mac that shows the error), then run
+  `~/bin/monitor-switch reach`, which makes the agent call the other Mac.
+- **"refused: bad signature":** `~/.monitor-switch/peer_secret` differs
+  between the Macs; run the installer again.
+- **The Mac firewall** may ask whether monitor-switch may accept incoming
+  connections: allow it, or the other Mac cannot call this one.
 
 ## Development
 
 ```sh
-cargo test           # config, DDC replies, the agent protocol, the ssh gate, hotkey parsing
+cargo test           # config, DDC replies, the agent protocol, call signing, hotkey parsing
 cargo clippy --all-targets -- -D warnings
 ```
 

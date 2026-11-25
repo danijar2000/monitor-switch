@@ -1,4 +1,5 @@
 mod agent;
+mod auth;
 mod bt;
 mod client;
 mod config;
@@ -12,6 +13,7 @@ mod logfile;
 #[path = "shared/notify.rs"]
 mod notify;
 mod peer;
+mod server;
 
 use std::process::ExitCode;
 
@@ -20,10 +22,11 @@ monitor-switch — moves an MSI monitor, Magic Keyboard and Magic Mouse between 
 
   monitor-switch switch    move the monitor, keyboard and mouse to the other Mac
   monitor-switch status    what this Mac's agent sees
+  monitor-switch reach     check that this Mac's agent reaches the other one
   monitor-switch agent     run the background agent (launchd starts it)
 
-Internal: ping, held, arrive, handover (one Mac to the other, through ssh-gate) and
-ssh-gate (the forced command of the other Mac's ssh key). The switch is bound
+Internal: ping, held, arrive, handover (one Mac's agent to the other's, over
+HTTP on port 47811, signed with ~/.monitor-switch/peer_secret). The switch is bound
 to a hotkey by monitor-switch-hotkey, Control+Enter by default.
 ";
 
@@ -32,8 +35,7 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
         ["agent"] => return run_agent(),
-        ["ssh-gate"] => client::ssh_gate(),
-        [command @ ("switch" | "status" | "ping" | "held" | "arrive" | "handover")] => client::run(command),
+        [command @ ("switch" | "status" | "reach" | "ping" | "held" | "arrive" | "handover")] => client::run(command),
         ["help" | "--help" | "-h"] => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;

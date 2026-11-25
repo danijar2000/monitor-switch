@@ -2,24 +2,14 @@
 # this file to install.conf and fill it in. Plain KEY=value lines;
 # the file is read, not run.
 
-# ssh destinations of the two Macs. The Macs share a monitor and so a
-# network: their .local names need no VPN. install.sh runs on either Mac and
-# finds out which one it is on; the line for that Mac may be left out
-# ($USER@<LocalHostName>.local), the other Mac's line is required. With
-# Tailscale SSH on the MacBook its Tailscale address cannot be used.
+# The two Macs as user@host. install.sh logs in to the other Mac with ssh
+# once to install there; afterwards the agents reach each other by the host
+# part (the .local name) over HTTP. install.sh runs on either Mac and finds
+# out which one it is on; the line for that Mac may be left out
+# ($USER@<LocalHostName>.local), the other Mac's line is required.
+# (MINI_FROM and MACBOOK_FROM from older versions are ignored.)
 MINI=user@mac-mini.local
 MACBOOK=user@macbook.local
-
-# The addresses each agent's ssh key is accepted from (sshd patterns, "*"
-# matches anything). The key already runs only the peer commands; this list
-# just keeps it to the home network. Exact addresses break whenever the router
-# restarts and hands out new ones, so prefer the LAN with a wildcard plus
-# link-local IPv6, which covers the .local names in any form sshd sees them:
-#   "192.168.31.*,fe80::*"
-# Exact addresses are stricter but need a DHCP reservation on the router.
-# MACBOOK_FROM defaults to any address.
-MINI_FROM="192.168.1.*,fe80::*"
-#MACBOOK_FROM="192.168.1.*,fe80::*"
 
 # Bluetooth addresses to hand over, keyboard first (see System Information > Bluetooth).
 DEVICES="AA:BB:CC:DD:EE:01, AA:BB:CC:DD:EE:02"

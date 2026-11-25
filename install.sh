@@ -6,10 +6,12 @@
 #   ./install.sh uninstall [--purge] remove from both Macs (--purge: with config, keys and logs)
 #
 # It works out whether this Mac is the MacBook or the Mac mini, installs here
-# and, over ssh, on the other Mac with the opposite role. Before that it
-# checks everything the install needs and fixes what it can, asking first:
-# Xcode command line tools and Rust (source checkout only), Remote Login, ssh
-# to the other Mac, each Mac's host key on the other, and install.conf
+# and, over ssh, on the other Mac with the opposite role. ssh is used only
+# while installing; afterwards the two agents talk over HTTP on the home
+# network (port 47811), signing every call with a shared secret that this
+# script creates and puts on both Macs. Before installing it checks
+# everything it needs and fixes what it can, asking first: Xcode command line
+# tools and Rust (source checkout only), ssh to the other Mac, and install.conf
 # (written from what it finds when missing). install.conf names both Macs, so
 # the same file works from either; it is the single source of the settings:
 # every install rewrites ~/.monitor-switch/config on both Macs from it (the
@@ -105,33 +107,14 @@ check_conf() {
   local here_host=${(L)${conf[$here]}#*@}
   [[ $here_host != *.local || $here_host == ${(L)SELF_HOST} ]] \
     || die "install.conf: $here=${conf[$here]}, but this Mac is ${ROLE_NAME[$ROLE]} ($SELF_HOST): fix MINI/MACBOOK or delete install.conf"
-  conf[MACBOOK_FROM]=${conf[MACBOOK_FROM]:-"*"}
-  conf[MINI_FROM]=${conf[MINI_FROM]:-"*"}
   conf[HDMI_INPUT]=${conf[HDMI_INPUT]:-18}
   check $there "$DESTINATION" "user@host of ${ROLE_NAME[$PEER_ROLE]}"
   check $here "$DESTINATION" "user@host of ${ROLE_NAME[$ROLE]}"
-  check MINI_FROM '[A-Za-z0-9.:%*,-]##' "a comma-separated list of addresses"
-  check MACBOOK_FROM '[A-Za-z0-9.:%*,-]##' "a comma-separated list of addresses"
   check DEVICES '[0-9A-Fa-f:, -]##' "Bluetooth addresses separated by commas"
   check HDMI_INPUT '[0-9]##' "a number"
   [[ ${(L)${conf[$there]}#*@} != ${(L)SELF_HOST} ]] \
     || die "install.conf: $there is this Mac ($SELF_HOST), but this Mac is ${ROLE_NAME[$ROLE]}: fix MINI/MACBOOK"
   PEER=${conf[$there]}
-}
-
-# This Mac's home network as an sshd pattern ("192.168.31.*"), plus
-# link-local IPv6, which the .local names may resolve to.
-home_network() {
-  local iface ip mask
-  iface=$(route -n get default 2>/dev/null | awk '/interface:/ {print $2}') || true
-  ip=$(ipconfig getifaddr "${iface:-en0}" 2>/dev/null) || true
-  mask=$(ipconfig getoption "${iface:-en0}" subnet_mask 2>/dev/null) || true
-  [[ -n $ip ]] || { print -r -- "*"; return; }
-  local -a octets=(${(s:.:)ip}) bytes=(${(s:.:)mask})
-  local keep=0 byte
-  for byte in $bytes; do [[ $byte == 255 ]] && (( ++keep )) || break; done
-  (( keep >= 1 && keep <= 3 )) || keep=3
-  print -r -- "${(j:.:)octets[1,keep]}.*,fe80::*"
 }
 
 # Paired Bluetooth keyboards and mice, keyboards first, as
@@ -210,13 +193,10 @@ write_conf() {
   done
   (( $#devices )) || die "no devices chosen"
 
-  local from=$(home_network)
   cat > install.conf <<CONF
 # Written by install.sh; see install.conf.example for what each line means.
 ${ROLE_KEY[$ROLE]}=$USER@$SELF_HOST
 ${ROLE_KEY[$PEER_ROLE]}=$peer_user@$peer_host
-MINI_FROM="$from"
-MACBOOK_FROM="$from"
 DEVICES="${(j:, :)devices}"
 HDMI_INPUT=18
 CONF
@@ -248,7 +228,7 @@ check_tools() {
   ok "Rust ($(cargo --version))"
 }
 
-# The other Mac's agent logs in to this Mac over ssh.
+# Only the other Mac needs Remote Login, and only while installing.
 check_remote_login() {
   nc -z -G 2 127.0.0.1 22 >/dev/null 2>&1 && { ok "Remote Login is on"; return; }
   warn "Remote Login is off; ${ROLE_NAME[$PEER_ROLE]} needs it to reach this Mac"
@@ -308,17 +288,6 @@ check_peer() {
   remote_role=$(ssh_peer "sed -n 's/^role *= *\\([a-z]*\\).*/\\1/p' ~/.monitor-switch/config 2>/dev/null | head -1") || true
   [[ -z $remote_role || $remote_role == $PEER_ROLE ]] \
     || die "$PEER is installed as ${ROLE_NAME[$remote_role]}, like this Mac: check MINI and MACBOOK in install.conf"
-  # The other Mac's agent refuses unknown host keys. This Mac's own key is
-  # known here for certain, so put exactly that one into the other Mac's
-  # known_hosts instead of trusting whatever answers on the network.
-  local host=${(L)${conf[${ROLE_KEY[$ROLE]}]#*@}} hostkey
-  hostkey=$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)
-  ssh_peer "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/known_hosts
-    if ! ssh-keygen -F '$host' -f ~/.ssh/known_hosts 2>/dev/null | grep -qF '${hostkey#* }'; then
-      ssh-keygen -R '$host' -f ~/.ssh/known_hosts >/dev/null 2>&1 || true
-      echo '$host $hostkey' >> ~/.ssh/known_hosts
-    fi"
-  ok "$peer_name knows this Mac's host key ($host)"
 }
 
 # Sets ROLE, PEER_ROLE and, from install.conf, PEER.
@@ -330,7 +299,6 @@ setup_roles() {
 
 preflight() {
   check_tools
-  check_remote_login
   if [[ ! -f install.conf ]]; then
     write_conf
     load_conf
@@ -371,6 +339,10 @@ if [[ $binaries == target/release ]]; then
   step "Building"
   cargo test --release --locked --quiet
   cargo build --release --locked
+  # Bind the embedded Info.plist to the signature under a stable identifier:
+  # without it macOS refuses Bluetooth (and Local Network) without asking.
+  codesign -s - -f -i local.monitor-switch target/release/monitor-switch
+  codesign -s - -f -i local.monitor-switch-hotkey target/release/monitor-switch-hotkey
 fi
 
 stage=$(mktemp -d)
@@ -390,14 +362,21 @@ remote=$(ssh_peer mktemp -d)
 # role_config <role>: the config of the Mac with that role.
 role_config() {
   if [[ $1 == macbook ]]; then
-    printf 'role = macbook\npeer_ssh = %s\ndevices = %s\n' "${conf[MINI]}" "${conf[DEVICES]}"
+    printf 'role = macbook\npeer = %s\ndevices = %s\n' "${conf[MINI]#*@}" "${conf[DEVICES]}"
   else
-    printf 'role = mini\npeer_ssh = %s\ndevices = %s\nhdmi_input = %s\n' \
-      "${conf[MACBOOK]}" "${conf[DEVICES]}" "${conf[HDMI_INPUT]}"
+    printf 'role = mini\npeer = %s\ndevices = %s\nhdmi_input = %s\n' \
+      "${conf[MACBOOK]#*@}" "${conf[DEVICES]}" "${conf[HDMI_INPUT]}"
   fi
 }
 
 cp "$binaries/monitor-switch" "$binaries/monitor-switch-hotkey" launchd/*.plist scripts/setup-mac.sh "$stage/"
+# The secret both agents sign their calls with: kept from an earlier
+# install on this Mac, else new.
+if [[ -s $HOME/.monitor-switch/peer_secret ]]; then
+  cp "$HOME/.monitor-switch/peer_secret" "$stage/peer_secret"
+else
+  openssl rand -hex 32 > "$stage/peer_secret"
+fi
 
 # Copy everything to the other Mac before starting anything on either Mac,
 # so a network failure here leaves both Macs as they were.
@@ -415,24 +394,19 @@ echo "$peer_name:"
 ssh_peer "zsh '$remote/setup-mac.sh' install '$remote'"
 activated="both Macs"
 
-# Each agent logs in to the other Mac with its own key, which may run only
-# the peer commands (ssh-gate), and only from the addresses in install.conf
-# (MINI_FROM: where the Mac mini connects from; MACBOOK_FROM: the MacBook).
-echo "Trust:"
-peer_key=$(ssh_peer 'cat ~/.monitor-switch/peer_key.pub')
-own_key=$(<"$HOME/.monitor-switch/peer_key.pub")
-printf '  %s:' "$here_name"; zsh "$stage/setup-mac.sh" trust "${conf[${ROLE_KEY[$PEER_ROLE]}_FROM]}" "$peer_key"
-printf '  %s:' "$peer_name"; ssh_peer "zsh '$remote/setup-mac.sh' trust ${(q)conf[${ROLE_KEY[$ROLE]}_FROM]} ${(q)own_key}"
-
-here_dest=${conf[${ROLE_KEY[$ROLE]}]}
-ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
-  -o IdentityAgent=none -i "$HOME/.monitor-switch/peer_key" -- "$PEER" '~/bin/monitor-switch ping' >/dev/null \
-  && ok "this Mac's agent reaches ${ROLE_NAME[$PEER_ROLE]}" \
-  || warn "this Mac's agent cannot reach $PEER: does ${ROLE_KEY[$ROLE]}_FROM list this Mac's address?"
-ssh_peer "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
-  -o IdentityAgent=none -i ~/.monitor-switch/peer_key -- '$here_dest' '~/bin/monitor-switch ping'" >/dev/null \
-  && ok "the agent of ${ROLE_NAME[$PEER_ROLE]} reaches this Mac" \
-  || warn "${ROLE_NAME[$PEER_ROLE]} cannot reach $here_dest: is Remote Login on here, and its address in ${ROLE_KEY[$PEER_ROLE]}_FROM?"
+# Each agent calls the other itself, so macOS may first ask on each Mac
+# whether "monitor-switch" may find devices on the local network.
+step "Network"
+print -r -- "  Click Allow if macOS asks whether \"monitor-switch\" may find devices on"
+print -r -- "  your local network (or accept incoming connections), on both Macs."
+reach_here() { ~/bin/monitor-switch reach >/dev/null 2>&1; }
+reach_there() { ssh_peer '~/bin/monitor-switch reach' >/dev/null 2>&1; }
+for tries in {1..10}; do reach_here && break; sleep 3; done
+reach_here && ok "this Mac's agent reaches ${ROLE_NAME[$PEER_ROLE]}" \
+  || warn "this Mac's agent cannot reach $PEER: allow monitor-switch in System Settings → Privacy & Security → Local Network, then run ~/bin/monitor-switch reach"
+for tries in {1..10}; do reach_there && break; sleep 3; done
+reach_there && ok "the agent of ${ROLE_NAME[$PEER_ROLE]} reaches this Mac" \
+  || warn "${ROLE_NAME[$PEER_ROLE]} cannot reach this Mac: allow monitor-switch under Local Network there, then run ~/bin/monitor-switch reach on it"
 
 # macOS asks once per Mac, after every install that changed the binary,
 # whether the agent may use Bluetooth; asking the agent for its status shows

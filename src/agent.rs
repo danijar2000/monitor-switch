@@ -6,8 +6,9 @@
 //! the main thread, which also turns the run loop IOBluetooth calls back on.
 //! Clients talk to it over a Unix socket (see `client`).
 //!
-//! The two Macs call each other over ssh (`peer_ssh` in the config) with the
-//! same commands; only the monitor handling differs by role. A hand-over:
+//! The two Macs call each other over HTTP on the home network (`peer` in the
+//! config; see `server` and `peer`), signing every call with a shared secret.
+//! Both send the same commands; only the monitor handling differs by role. A hand-over:
 //!
 //! 1. the Mac holding the devices checks the peer answers (`ping`),
 //! 2. unpairs the devices and waits until they are really free,
@@ -107,6 +108,9 @@ fn tick() {
 /// thread.
 static DEVICES: OnceLock<Vec<String>> = OnceLock::new();
 
+/// The other Mac, for `reach`, which is answered off the main thread.
+static PEER: OnceLock<String> = OnceLock::new();
+
 /// Where requests that the agent sends itself go.
 static REQUESTS: OnceLock<Sender<Request>> = OnceLock::new();
 
@@ -140,12 +144,16 @@ pub fn run() -> Result<(), StartError> {
     crate::logfile::rotate(&config::dir().join("agent.log"));
     let config = Config::load().map_err(StartError::Permanent)?;
     let listener = bind_socket()?;
+    let secret = crate::auth::load_secret().map_err(StartError::Permanent)?;
+    let network = crate::server::listen().map_err(StartError::Transient)?;
     let (sender, receiver) = mpsc::channel::<Request>();
     let _ = REQUESTS.set(sender.clone());
     let _ = DEVICES.set(config.devices.clone());
 
     tick();
     thread::spawn(move || accept_clients(listener, sender));
+    thread::spawn(move || crate::server::serve(network, secret));
+    let _ = PEER.set(config.peer.clone());
     thread::spawn(watchdog);
     if config.role == Role::MacBook {
         keep_awake();
@@ -261,6 +269,21 @@ fn read_request(stream: UnixStream, sender: &Sender<Request>) {
         "ping" => {
             let _ = writeln!(reply, "ok");
         }
+        // Checks that this agent reaches the other one (install.sh runs it).
+        // It is the agent that must be allowed on the local network, not the
+        // terminal, so the call is made from here.
+        "reach" => {
+            let peer = PEER.get().cloned().unwrap_or_default();
+            match peer::call(&peer, "ping", client::timeout("ping")) {
+                Ok(_) => {
+                    let _ = writeln!(reply, "{peer} answers");
+                    let _ = writeln!(reply, "ok");
+                }
+                Err(failure) => {
+                    let _ = writeln!(reply, "error: {}", failure.reason);
+                }
+            }
+        }
         // Answered from the HID registry, which needs no Bluetooth call and
         // so no main thread.
         "held" => {
@@ -290,7 +313,7 @@ fn same_user(stream: &UnixStream) -> bool {
 }
 
 /// MacBook only: with the lid closed and the monitor showing the other Mac it
-/// would otherwise idle-sleep and stop answering the Mac mini's ssh calls.
+/// would otherwise idle-sleep and stop answering the Mac mini's calls.
 fn keep_awake() {
     let pid = std::process::id().to_string();
     spawn_detached(Command::new("caffeinate").args(["-i", "-s", "-w", &pid]));
@@ -440,7 +463,7 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
     }
     // Never let go of the keyboard before the other side is known to answer
     // and not to be switching itself.
-    peer::call(&config.peer_ssh, "ping", client::timeout("ping")).map_err(|failure| {
+    peer::call(&config.peer, "ping", client::timeout("ping")).map_err(|failure| {
         format!("the other Mac is not ready, nothing changed ({})", failure.reason)
     })?;
 
@@ -453,7 +476,7 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
 
     // The other Mac pairs the devices while the Mac mini gets the monitor off
     // its input; doing the two one after the other would add seconds.
-    let arrival = peer::start(&config.peer_ssh, "arrive", client::timeout("arrive"));
+    let arrival = peer::start(&config.peer, "arrive", client::timeout("arrive"));
     if config.role == Role::Mini {
         leave_hdmi(config, out);
     }
@@ -479,7 +502,7 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
         // Refused before it began: it took nothing, so everything comes back
         // here. Asking `held` would only get busy again.
         None if refused_busy(&stdout) => Vec::new(),
-        None => match peer::call(&config.peer_ssh, "held", client::timeout("held")) {
+        None => match peer::call(&config.peer, "held", client::timeout("held")) {
             Ok(held) => parse_held(&held),
             Err(query) => {
                 return Err(format!(
@@ -554,7 +577,7 @@ fn release(devices: &[bt::Device], out: &mut Output) -> Result<(), String> {
 /// once it is free again. The wait runs on its own thread and so sleeps
 /// instead of turning the run loop (see `peer::Call::wait`).
 fn ask_peer_to_hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
-    let call = peer::start(&config.peer_ssh, "handover", client::timeout("handover"))
+    let call = peer::start(&config.peer, "handover", client::timeout("handover"))
         .map_err(|failure| failure.reason)?;
     thread::spawn(move || {
         if let Err(failure) = call.wait() {
@@ -617,12 +640,12 @@ fn parse_took(stdout: &str) -> Option<Vec<String>> {
 }
 
 /// True when the peer refused the request because it is running a switch
-/// of its own: through `ssh-gate` its verdict line is `BUSY_REPLY`.
+/// of its own: its verdict line is `BUSY_REPLY`.
 fn refused_busy(stdout: &str) -> bool {
     stdout.lines().any(|line| line == BUSY_REPLY)
 }
 
-/// The addresses in a `held` answer. Through `ssh-gate` the answer ends with
+/// The addresses in a `held` answer. The answer ends with
 /// the verdict line, which is not an address.
 fn parse_held(answer: &str) -> Vec<String> {
     answer.lines().filter_map(crate::bt::normalize).collect()

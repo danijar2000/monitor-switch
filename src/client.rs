@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-/// Commands one Mac sends the other through `ssh-gate`.
+/// Commands one Mac may send the other (see `server`).
 pub const PEER_COMMANDS: [&str; 5] = ["ping", "held", "status", "arrive", "handover"];
 
 /// How long to wait for the agent's answer to `command`.
@@ -69,38 +69,6 @@ pub fn run(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The forced command of the ssh key the other Mac logs in with: it may run
-/// only the peer commands, nothing else on this Mac.
-pub fn ssh_gate() -> Result<(), String> {
-    let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
-    let command = gate_command(&original).ok_or(format!("command not allowed: {original:?}"))?;
-    // Unlike `run`, print the verdict line too: the caller parses it.
-    match request(command) {
-        Ok(lines) => {
-            for line in lines {
-                println!("{line}");
-            }
-            println!("ok");
-            Ok(())
-        }
-        Err(reason) => {
-            println!("error: {reason}");
-            Err(reason)
-        }
-    }
-}
-
-/// `~/bin/monitor-switch arrive` -> `arrive`, if it is a peer command.
-fn gate_command(original: &str) -> Option<&'static str> {
-    let mut words = original.split_whitespace();
-    let program = words.next()?;
-    let command = words.next()?;
-    if words.next().is_some() || !program.ends_with("monitor-switch") {
-        return None;
-    }
-    PEER_COMMANDS.into_iter().find(|allowed| *allowed == command)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,15 +83,5 @@ mod tests {
         assert_eq!(finish(lines(&["a", "error: busy"])).unwrap_err(), "busy");
         assert!(finish(lines(&["a", "took: x"])).is_err());
         assert!(finish(Vec::new()).is_err());
-    }
-
-    #[test]
-    fn the_gate_lets_through_only_peer_commands() {
-        assert_eq!(gate_command("~/bin/monitor-switch arrive"), Some("arrive"));
-        assert_eq!(gate_command("/Users/x/bin/monitor-switch ping"), Some("ping"));
-        assert_eq!(gate_command("~/bin/monitor-switch switch"), None);
-        assert_eq!(gate_command("~/bin/monitor-switch ping; rm -rf ~"), None);
-        assert_eq!(gate_command("sh -c ping"), None);
-        assert_eq!(gate_command(""), None);
     }
 }
