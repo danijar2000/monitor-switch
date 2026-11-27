@@ -17,33 +17,47 @@ Keyboard and Magic Mouse.
 
 ## Install
 
+Before you start:
+
 1. Pair the keyboard and mouse with the Mac you install from.
 2. In the monitor's menu set **Input Select** to **Auto**.
 3. On the **other** Mac turn on **Remote Login** (System Settings → General →
    Sharing). It is needed only while installing.
-4. Run in Terminal on either Mac; it installs on both:
 
-```sh
-curl -fsSL https://github.com/danijar2000/monitor-switch/releases/latest/download/get.sh | zsh
-```
+### With Homebrew
 
-Or with Homebrew:
+On either Mac:
 
 ```sh
 brew install danijar2000/tap/monitor-switch
 monitor-switch setup
 ```
 
+Homebrew is needed only on the Mac you run this on: `monitor-switch setup`
+installs on both Macs.
+
+### Without Homebrew
+
+On either Mac:
+
+```sh
+curl -fsSL https://github.com/danijar2000/monitor-switch/releases/latest/download/get.sh | zsh
+```
+
+### Then
+
 The installer finds the other Mac and the devices, asks what it is unsure
 of, and sets up both Macs. When macOS asks whether **monitor-switch** may use
-**Bluetooth** and the **local network**, click **Allow** on each Mac.
+**Bluetooth** and the **local network**, click **Allow** on each Mac. After
+every update macOS asks about Bluetooth again.
 
-- **Update:** run the same line again; with Homebrew,
-  `brew upgrade monitor-switch && monitor-switch setup`.
-- **Change settings:** edit `~/.monitor-switch/installer/install.conf` and
-  run `~/bin/monitor-switch setup`.
-- **Uninstall:** `~/bin/monitor-switch setup uninstall`
-  (`--purge` also deletes settings and logs).
+| | With Homebrew | Without Homebrew |
+|---|---|---|
+| **Update** | `brew upgrade monitor-switch && monitor-switch setup` | run the `curl` line again |
+| **Change settings** | edit `~/.monitor-switch/installer/install.conf`, then `monitor-switch setup` | the same |
+| **Uninstall** | `monitor-switch setup uninstall && brew uninstall monitor-switch` | `~/bin/monitor-switch setup uninstall` |
+
+`setup uninstall --purge` also deletes the settings and logs.
 
 ## Use
 
