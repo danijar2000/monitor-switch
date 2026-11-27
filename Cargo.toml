@@ -3,7 +3,7 @@ name = "monitor-switch"
 version = "0.0.8"
 edition = "2021"
 rust-version = "1.80"
-description = "Moves an MSI monitor, a Magic Keyboard and a Magic Mouse between two Macs"
+description = "Share one monitor, keyboard and mouse between two Macs with one hotkey"
 license = "MIT"
 publish = false
 

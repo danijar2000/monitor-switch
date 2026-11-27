@@ -2,6 +2,7 @@
 //! Apple Silicon Macs expose for external displays.
 
 use crate::iokit::{find_service, CFRelease, CFTypeRef};
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -22,6 +23,26 @@ extern "C" {
     fn IOAVServiceReadI2C(svc: CFTypeRef, chip: u32, offset: u32, buf: *mut u8, len: u32) -> i32;
     fn IOAVServiceWriteI2C(svc: CFTypeRef, chip: u32, offset: u32, buf: *const u8, len: u32)
         -> i32;
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayIsAsleep(display: u32) -> u32;
+}
+
+/// True while this Mac's display is asleep and sends no picture.
+pub fn is_asleep() -> bool {
+    // SAFETY: both calls take no pointers and have no preconditions.
+    unsafe { CGDisplayIsAsleep(CGMainDisplayID()) != 0 }
+}
+
+/// One exchange with the monitor at a time: the main loop and the thread
+/// that answers `state` both talk to it.
+static BUS: Mutex<()> = Mutex::new(());
+
+fn bus() -> std::sync::MutexGuard<'static, ()> {
+    BUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Reply to a "get VCP feature" request.
@@ -55,6 +76,7 @@ impl Display {
     /// The I2C timing pauses are tens of milliseconds, short enough not to
     /// matter to the Bluetooth run loop of the calling thread.
     pub fn get(&self, vcp: u8) -> Reply {
+        let _bus = bus();
         let pause = Duration::from_millis(80);
         for _ in 0..3 {
             let mut request = [0x82, 0x01, vcp, 0];
@@ -83,6 +105,7 @@ impl Display {
     /// Writes a VCP feature. Returns false if the I2C write itself failed;
     /// the monitor does not acknowledge the command either way.
     pub fn set(&self, vcp: u8, value: u16) -> bool {
+        let _bus = bus();
         let [hi, lo] = value.to_be_bytes();
         let mut packet = [0x84, 0x03, vcp, hi, lo, 0];
         packet[5] = checksum(DDC_DEST ^ DDC_HOST as u8, &packet[..5]);

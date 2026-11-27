@@ -126,19 +126,10 @@ pub fn failed(reason: &str) {
 
 // ---- the panel process -----------------------------------------------------
 
-use std::ffi::{c_char, c_void, CString};
-
-type Id = *mut c_void;
-type Sel = *const c_void;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Rect {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
+use crate::appkit::{
+    class, color, dispatch_after_f, dispatch_async_f, dispatch_time, main_queue, nsstring, rect_of, Id, Rect, NIL,
+};
+use std::ffi::c_void;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -155,70 +146,6 @@ struct Insets {
     bottom: f64,
     right: f64,
 }
-
-#[link(name = "objc")]
-extern "C" {
-    fn objc_getClass(name: *const c_char) -> Id;
-    fn sel_registerName(name: *const c_char) -> Sel;
-    fn objc_msgSend();
-    /// On Intel a method that returns a large struct goes through this.
-    #[cfg(target_arch = "x86_64")]
-    fn objc_msgSend_stret();
-}
-
-#[link(name = "AppKit", kind = "framework")]
-extern "C" {}
-
-extern "C" {
-    static _dispatch_main_q: c_void;
-    fn dispatch_async_f(queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
-    fn dispatch_after_f(when: u64, queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
-    fn dispatch_time(when: u64, delta: i64) -> u64;
-}
-
-fn sel(name: &str) -> Sel {
-    let c = CString::new(name).unwrap();
-    unsafe { sel_registerName(c.as_ptr()) }
-}
-
-fn class(name: &str) -> Id {
-    let c = CString::new(name).unwrap();
-    unsafe { objc_getClass(c.as_ptr()) }
-}
-
-/// `msg!(ReturnType, receiver, "selector:", arg => ArgType, ...)`
-macro_rules! msg {
-    ($ret:ty, $obj:expr, $sel:expr $(, $arg:expr => $ty:ty)*) => {{
-        // SAFETY: every call site names a selector the receiver answers,
-        // with the argument and return types that selector has.
-        #[allow(unused_unsafe)]
-        unsafe {
-            let f: unsafe extern "C" fn(Id, Sel $(, $ty)*) -> $ret =
-                std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-            f($obj, sel($sel) $(, $arg)*)
-        }
-    }};
-}
-
-/// A message that returns an `NSRect`.
-fn rect_of(object: Id, selector: &str) -> Rect {
-    #[cfg(target_arch = "x86_64")]
-    let send = objc_msgSend_stret as unsafe extern "C" fn();
-    #[cfg(not(target_arch = "x86_64"))]
-    let send = objc_msgSend as unsafe extern "C" fn();
-    // SAFETY: `selector` is one that returns an NSRect.
-    unsafe {
-        let f: unsafe extern "C" fn(Id, Sel) -> Rect = std::mem::transmute(send);
-        f(object, sel(selector))
-    }
-}
-
-fn nsstring(text: &str) -> Id {
-    let c = CString::new(text.replace('\0', " ")).unwrap();
-    msg!(Id, class("NSString"), "stringWithUTF8String:", c.as_ptr() => *const c_char)
-}
-
-const NIL: Id = std::ptr::null_mut();
 
 /// Width of the panel and the room its texts may take.
 const WIDTH: f64 = 300.0;
@@ -252,15 +179,6 @@ struct Ui {
 static UI: Mutex<Option<Ui>> = Mutex::new(None);
 static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-fn main_queue() -> *const c_void {
-    // SAFETY: only the address is taken; the static is never read here.
-    // (Rust before 1.82 needs the unsafe block for that too.)
-    #[allow(unused_unsafe)]
-    unsafe {
-        std::ptr::addr_of!(_dispatch_main_q)
-    }
-}
-
 /// Runs the panel until it is told to close or its input ends.
 pub fn run() {
     *UI.lock().unwrap() = Some(Ui {
@@ -287,7 +205,15 @@ pub fn run() {
 }
 
 /// Takes in the lines read so far and redraws. Main thread.
+///
+/// AppKit empties its own autorelease pool only when an event arrives, and
+/// the panel gets none: every callback here runs in a pool of its own, or
+/// the views of each redraw would stay until the panel closes.
 extern "C" fn apply(_context: *mut c_void) {
+    crate::bt::with_pool(apply_lines);
+}
+
+fn apply_lines() {
     let lines: Vec<String> = std::mem::take(&mut *LINES.lock().unwrap());
     let mut guard = UI.lock().unwrap();
     let Some(ui) = guard.as_mut() else { return };
@@ -341,7 +267,7 @@ extern "C" fn apply(_context: *mut c_void) {
 /// notes devices that take long, and follows screens coming and going (the
 /// monitor arrives in the middle of a switch).
 extern "C" fn tick(_context: *mut c_void) {
-    {
+    crate::bt::with_pool(|| {
         let mut guard = UI.lock().unwrap();
         if let Some(ui) = guard.as_mut() {
             let now = Instant::now();
@@ -360,14 +286,10 @@ extern "C" fn tick(_context: *mut c_void) {
                 draw(ui);
             }
         }
-    }
+    });
     unsafe {
         dispatch_after_f(dispatch_time(0, 250_000_000), main_queue(), NIL, tick);
     }
-}
-
-fn color(name: &str) -> Id {
-    msg!(Id, class("NSColor"), name)
 }
 
 fn label(text: &str, size: f64, bold: bool, color_name: &str) -> Id {
@@ -397,7 +319,8 @@ fn mark(state: &str) -> Id {
             msg!((), spinner, "setControlSize:", 1usize => usize);
             msg!((), spinner, "setIndeterminate:", true => bool);
             msg!((), spinner, "startAnimation:", NIL => Id);
-            return spinner;
+            // Owned by the row it is put into.
+            return msg!(Id, spinner, "autorelease");
         }
     };
     let image = msg!(
@@ -421,7 +344,8 @@ fn mark(state: &str) -> Id {
 }
 
 fn stack(vertical: bool, spacing: f64, alignment: isize) -> Id {
-    let view = msg!(Id, msg!(Id, class("NSStackView"), "alloc"), "init");
+    // Owned by the view it is put into.
+    let view = msg!(Id, msg!(Id, msg!(Id, class("NSStackView"), "alloc"), "init"), "autorelease");
     msg!((), view, "setOrientation:", isize::from(vertical) => isize);
     msg!((), view, "setSpacing:", spacing => f64);
     msg!((), view, "setAlignment:", alignment => isize);
@@ -478,6 +402,7 @@ fn new_panel() -> (Id, Id) {
     msg!((), panel, "setCollectionBehavior:", 1usize | 16 | 256 => usize);
 
     let effect = msg!(Id, msg!(Id, class("NSVisualEffectView"), "alloc"), "initWithFrame:", frame => Rect);
+    let effect = msg!(Id, effect, "autorelease");
     msg!((), effect, "setMaterial:", 6isize => isize); // popover
     msg!((), effect, "setBlendingMode:", 0isize => isize); // behind the window
     msg!((), effect, "setState:", 1isize => isize); // always active

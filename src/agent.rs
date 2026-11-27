@@ -19,6 +19,10 @@
 //!    `took:` line the peer is asked what it holds (`held`); if it cannot
 //!    say, nothing is taken back: grabbing a device the peer holds would set
 //!    the Macs fighting.
+//!
+//! `monitor` moves only the monitor and leaves the devices. Only the Mac mini
+//! can tell the monitor where to go, so the MacBook passes the request on.
+//! The Mac mini also keeps the monitor with the devices (`keep_monitor`).
 
 use crate::bt;
 use crate::client;
@@ -33,7 +37,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -76,6 +80,10 @@ const MAX_REQUEST: u64 = 64;
 /// hung and the agent exits with failure, so launchd starts a fresh one.
 const HUNG_AFTER: Duration = Duration::from_secs(400);
 
+/// How long the Mac mini may take over `monitor`: waking the MacBook 5 s,
+/// the monitor leaving 20 s, plus a margin.
+const MONITOR_MOVE: Duration = Duration::from_secs(45);
+
 /// Prefix of the line that lists the devices a Mac holds after `arrive`.
 const TOOK: &str = "took: ";
 
@@ -94,6 +102,16 @@ static LAST_HANDOVER: Mutex<Option<Instant>> = Mutex::new(None);
 /// has run, so that any other one is refused at once instead of queueing.
 static BUSY: AtomicBool = AtomicBool::new(false);
 
+/// Set once IOBluetooth has answered its first call. Until the user allows
+/// Bluetooth, that call waits on the main thread for the system's question,
+/// and nothing that needs the main thread can run: a Mac in that state must
+/// not be handed the devices.
+static BLUETOOTH_READY: AtomicBool = AtomicBool::new(false);
+
+/// What a Mac answers while it waits for that permission.
+const NO_BLUETOOTH: &str =
+    "error: not ready: it waits for the Bluetooth permission: click Allow for monitor-switch on its screen";
+
 /// Claims `BUSY`; false if a hand-changing request is already accepted.
 fn claim_busy() -> bool {
     BUSY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok()
@@ -111,6 +129,38 @@ fn tick() {
 /// The configured device addresses, for the queries answered off the main
 /// thread.
 static DEVICES: OnceLock<Vec<String>> = OnceLock::new();
+
+/// What the menu calls each device, in the order of `DEVICES`. The names
+/// come from IOBluetooth, which only the main thread may ask, and which
+/// stops to ask the user for permission the first time: so only from the
+/// main loop, never before the agent answers its clients. Until then a
+/// device is called by its place in the list.
+static LABELS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn remember_labels(config: &Config) {
+    let labels = config.devices.iter().enumerate().map(|(index, address)| device_label(address, index)).collect();
+    *LABELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = labels;
+}
+
+/// This Mac's role and, on the Mac mini, the VCP value of its monitor input.
+static ROLE: OnceLock<(Role, u16)> = OnceLock::new();
+
+/// Mac mini only. The devices were handed to the MacBook and it took them.
+static AWAY: AtomicBool = AtomicBool::new(false);
+
+/// Mac mini only. `monitor` put the monitor on the Mac that does not hold
+/// the devices: it is left there until the next switch.
+static PEEK: AtomicBool = AtomicBool::new(false);
+
+/// Mac mini only. The VCP value the monitor reports while it shows the
+/// MacBook; 0 until it has been seen once. Kept in `peer_input` between runs.
+static PEER_INPUT: AtomicU16 = AtomicU16::new(0);
+
+fn learn_peer_input(value: u16) {
+    if value != 0 && PEER_INPUT.swap(value, Ordering::SeqCst) != value {
+        let _ = std::fs::write(config::dir().join("peer_input"), format!("{value}\n"));
+    }
+}
 
 /// The other Mac, for `reach`, which is answered off the main thread.
 static PEER: OnceLock<String> = OnceLock::new();
@@ -157,6 +207,10 @@ pub fn run() -> Result<(), StartError> {
     let (sender, receiver) = mpsc::channel::<Request>();
     let _ = REQUESTS.set(sender.clone());
     let _ = DEVICES.set(config.devices.clone());
+    let _ = ROLE.set((config.role, config.hdmi_input));
+    if let Ok(text) = std::fs::read_to_string(config::dir().join("peer_input")) {
+        PEER_INPUT.store(text.trim().parse().unwrap_or(0), Ordering::SeqCst);
+    }
 
     tick();
     thread::spawn(move || accept_clients(listener, sender));
@@ -166,14 +220,29 @@ pub fn run() -> Result<(), StartError> {
     if config.role == Role::MacBook {
         keep_awake();
     }
+    thread::spawn(run_menu);
     eprintln!("agent started");
 
     let log = config::dir().join("agent.log");
     let mut rotated = Instant::now();
+    let mut watch = MonitorWatch::new();
     loop {
         tick();
+        if !BLUETOOTH_READY.load(Ordering::SeqCst) {
+            // The first call makes macOS ask for the permission, if it has
+            // to, and returns once the user has answered.
+            bt::with_pool(|| {
+                let _ = bt::Device::with_address(&config.devices[0]);
+                remember_labels(&config);
+            });
+            BLUETOOTH_READY.store(true, Ordering::SeqCst);
+            eprintln!("Bluetooth answers");
+        }
         if let Ok(request) = receiver.recv_timeout(Duration::from_millis(200)) {
             bt::with_pool(|| serve(&config, request));
+        }
+        if config.role == Role::Mini {
+            keep_monitor(&config, &mut watch);
         }
         bt::with_pool(|| bt::spin(0.05));
         if rotated.elapsed() > Duration::from_secs(3600) {
@@ -271,8 +340,14 @@ fn read_request(stream: UnixStream, sender: &Sender<Request>) {
         // The peer pings before it lets go of the devices: a Mac in the
         // middle of its own switch says so, and both stay as they are
         // instead of each releasing and then taking everything back.
-        "ping" | "held" | "status" if busy => {
+        "ping" | "held" | "status" | "state" | "overview" if busy => {
             let _ = writeln!(reply, "{BUSY_REPLY}");
+        }
+        "ping" | "handover" | "arrive" if !BLUETOOTH_READY.load(Ordering::SeqCst) => {
+            let _ = writeln!(reply, "{NO_BLUETOOTH}");
+        }
+        "switch" | "monitor" if !BLUETOOTH_READY.load(Ordering::SeqCst) => {
+            let _ = writeln!(reply, "error: this Mac waits for the Bluetooth permission: click Allow for monitor-switch");
         }
         "ping" => {
             let _ = writeln!(reply, "ok");
@@ -285,6 +360,11 @@ fn read_request(stream: UnixStream, sender: &Sender<Request>) {
             match peer::call(&peer, "ping", client::timeout("ping")) {
                 Ok(_) => {
                     let _ = writeln!(reply, "{peer} answers");
+                    let _ = writeln!(reply, "ok");
+                }
+                // It was reached; what it waits for is not the network.
+                Err(failure) if NO_BLUETOOTH.ends_with(&failure.reason) => {
+                    let _ = writeln!(reply, "{peer} answers, but waits for the Bluetooth permission");
                     let _ = writeln!(reply, "ok");
                 }
                 Err(failure) => {
@@ -302,7 +382,30 @@ fn read_request(stream: UnixStream, sender: &Sender<Request>) {
             }
             let _ = writeln!(reply, "ok");
         }
-        "switch" | "handover" | "arrive" if !claim_busy() => {
+        // The other Mac is about to show its picture to nobody: the monitor
+        // comes only to an input that carries a signal.
+        "wake" => {
+            wake_display();
+            let _ = writeln!(reply, "ok");
+        }
+        // What this Mac holds, for the menu; no Bluetooth call, so no main
+        // thread.
+        "state" => {
+            for line in state() {
+                let _ = writeln!(reply, "{line}");
+            }
+            let _ = writeln!(reply, "ok");
+        }
+        // The same for both Macs together.
+        "overview" => {
+            let peer = PEER.get().cloned().unwrap_or_default();
+            let theirs = peer::call(&peer, "state", client::timeout("state")).ok();
+            for line in overview(&state(), theirs.as_deref()) {
+                let _ = writeln!(reply, "{line}");
+            }
+            let _ = writeln!(reply, "ok");
+        }
+        "switch" | "handover" | "arrive" | "monitor" if !claim_busy() => {
             let _ = writeln!(reply, "{BUSY_REPLY}");
         }
         _ => {
@@ -325,6 +428,34 @@ fn same_user(stream: &UnixStream) -> bool {
 fn keep_awake() {
     let pid = std::process::id().to_string();
     spawn_detached(Command::new("caffeinate").args(["-i", "-s", "-w", &pid]));
+}
+
+/// Lights this Mac's display for a moment.
+fn wake_display() {
+    spawn_detached(Command::new("caffeinate").args(["-u", "-t", "3"]));
+}
+
+/// Keeps the menu bar icon running: a separate process, like the panel. It
+/// ends when its input does, which is when this agent goes away.
+fn run_menu() {
+    loop {
+        let Ok(program) = std::env::current_exe() else {
+            return;
+        };
+        let child = Command::new(program)
+            .arg("menu")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            // `wait` would close the input, and with it the menu.
+            let input = child.stdin.take();
+            let _ = child.wait();
+            drop(input);
+        }
+        thread::sleep(Duration::from_secs(10));
+    }
 }
 
 /// Starts a helper process and reaps it when it ends.
@@ -361,7 +492,7 @@ fn serve(config: &Config, request: Request) {
     );
     // A hand-changing request claimed BUSY when it was accepted; it is
     // released here once the request has run or been dropped.
-    let changes_hands = matches!(command, "switch" | "handover" | "arrive");
+    let changes_hands = matches!(command, "switch" | "handover" | "arrive" | "monitor");
     // `arrive` is never dropped: the other Mac has already let go of the
     // devices and waits for this one to take them, so dropping it would
     // leave them on neither Mac (this happens when this Mac was asleep).
@@ -375,9 +506,13 @@ fn serve(config: &Config, request: Request) {
         "arrive" => arrive(config, &mut out),
         "switch" if !holds_devices(config) => ask_peer_to_hand_over(config, &mut out),
         "switch" | "handover" => hand_over(config, &mut out),
+        "monitor" => monitor(config, &mut out),
         other => Err(format!("unknown command: {other}")),
     }))
     .unwrap_or_else(|_| Err("internal error (see agent.log)".into()));
+    if changes_hands || command == "status" {
+        remember_labels(config);
+    }
     if changes_hands {
         BUSY.store(false, Ordering::SeqCst);
         match &result {
@@ -402,8 +537,9 @@ fn status(config: &Config, out: &mut Output) -> Result<(), String> {
     out.line(&format!("role: {role}"));
     for address in &config.devices {
         let device = bt::Device::with_address(address)?;
+        let battery = crate::hid::battery(address).map(|percent| format!(" battery={percent}%")).unwrap_or_default();
         out.line(&format!(
-            "{}  paired={} connected={} usable={}  {}",
+            "{}  paired={} connected={} usable={}{battery}  {}",
             device.address,
             device.is_paired(),
             device.is_connected(),
@@ -429,14 +565,20 @@ fn holds_devices(config: &Config) -> bool {
 fn arrive(config: &Config, out: &mut Output) -> Result<(), String> {
     hud::open(&format!("Switching to {}", mac_name(config.role)));
     show_devices(&config.devices);
+    AWAY.store(false, Ordering::SeqCst);
+    PEEK.store(false, Ordering::SeqCst);
     // Wake the display: in Auto mode the monitor only settles on an input
     // that carries a signal.
-    spawn_detached(Command::new("caffeinate").args(["-u", "-t", "3"]));
+    wake_display();
     if config.role == Role::Mini {
         bt::spin(0.3);
         // Any accepted input command makes this monitor leave its current
-        // input; in Auto mode it then settles on HDMI.
+        // input; in Auto mode it then settles on HDMI. So none is sent when
+        // it is here already (`monitor` brought it earlier).
         match ddc::Display::external() {
+            Some(display) if monitor_place(&display, config.hdmi_input) == "here" => {
+                out.line("monitor: already here")
+            }
             Some(display) if display.set(0x60, config.hdmi_input) => out.line("monitor: switching"),
             _ => out.line("monitor: DDC command failed"),
         }
@@ -489,20 +631,43 @@ fn other_role(role: Role) -> Role {
 fn device_label(address: &str, index: usize) -> String {
     let name = bt::Device::with_address(address).map(|device| device.name()).unwrap_or_default();
     if name.is_empty() || bt::normalize(&name).is_some() {
-        return match index {
-            0 => "Keyboard".into(),
-            1 => "Mouse".into(),
-            _ => address.to_string(),
-        };
+        return generic_label(address, index);
     }
     name
+}
+
+fn generic_label(address: &str, index: usize) -> String {
+    match index {
+        0 => "Keyboard".into(),
+        1 => "Mouse".into(),
+        _ => address.to_string(),
+    }
+}
+
+/// A battery at or under this many percent is pointed out in the panel.
+const LOW_BATTERY: u8 = 10;
+
+/// The label with the device's charge, when this Mac can read it.
+fn with_battery(label: &str, address: &str) -> String {
+    match crate::hid::battery(address) {
+        Some(percent) => format!("{label} · {percent}%"),
+        None => label.to_string(),
+    }
 }
 
 /// Puts a row for every device on the panel, in progress.
 fn show_devices(addresses: &[String]) {
     for (index, address) in addresses.iter().enumerate() {
-        hud::row(address, &device_label(address, index), hud::BUSY, "");
+        hud::row(address, &with_battery(&device_label(address, index), address), hud::BUSY, "");
     }
+}
+
+/// Marks a device that came up on this Mac, with its charge: a mouse about
+/// to run flat otherwise looks like a switch that failed.
+fn show_arrived(address: &str, index: usize) {
+    let label = with_battery(&device_label(address, index), address);
+    let low = crate::hid::battery(address).is_some_and(|percent| percent <= LOW_BATTERY);
+    hud::row(address, &label, hud::OK, if low { "Battery low: charge it soon" } else { "" });
 }
 
 /// Pairs the devices, keyboard first, and always reports which ones arrived.
@@ -528,7 +693,7 @@ fn take_devices(addresses: &[String], out: &mut Output) -> Result<(), String> {
         let mut ask_to_wake = || hud::row(address, "", hud::BUSY, "Not answering. Click it, or switch it off and on");
         match device.take(TAKE_TIMEOUT, &mut ask_to_wake) {
             Ok(()) => {
-                hud::row(address, "", hud::OK, "");
+                show_arrived(address, DEVICES.get().and_then(|all| all.iter().position(|known| known == address)).unwrap_or(index));
                 out.line(&format!("{} connected", device.address));
                 took.push(device.address);
             }
@@ -588,7 +753,7 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
     // its input; doing the two one after the other would add seconds.
     let arrival = peer::start(&config.peer, "arrive", client::timeout("arrive"));
     if config.role == Role::Mini {
-        leave_hdmi(config, out);
+        let _ = leave_hdmi(config, out);
     }
     let reply = arrival.and_then(peer::Call::wait);
     let stdout = match &reply {
@@ -599,6 +764,8 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
         out.line(&format!("peer: {line}"));
     }
     let Err(failure) = reply else {
+        AWAY.store(true, Ordering::SeqCst);
+        PEEK.store(false, Ordering::SeqCst);
         hud::row(hud::TITLE, &format!("Switched to {other}"), hud::OK, "");
         for address in &config.devices {
             hud::row(address, "", hud::OK, "");
@@ -737,29 +904,235 @@ fn ask_peer_to_hand_over(config: &Config, out: &mut Output) -> Result<(), String
 /// DisplayPort by itself, but only after about six seconds without a signal.
 /// Anything that wakes this display in that window keeps the monitor here,
 /// so the display is put back to sleep until the monitor reports another
-/// input.
-fn leave_hdmi(config: &Config, out: &mut Output) {
+/// input. Returns whether the monitor left.
+fn leave_hdmi(config: &Config, out: &mut Output) -> bool {
     let sleep_display = || {
         let _ = Command::new("pmset").arg("displaysleepnow").status();
     };
     let Some(display) = ddc::Display::external() else {
         sleep_display();
         out.line("monitor: no DDC display found; display put to sleep once");
-        return;
+        return false;
     };
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         sleep_display();
         bt::spin(1.0);
-        if matches!(display.get(0x60), ddc::Reply::Value { current } if current != config.hdmi_input) {
-            out.line("monitor: left for the MacBook");
-            return;
+        if let ddc::Reply::Value { current } = display.get(0x60) {
+            if current != config.hdmi_input {
+                learn_peer_input(current);
+                out.line("monitor: left for the MacBook");
+                return true;
+            }
         }
         if Instant::now() >= deadline {
             out.line("monitor: still on this Mac after 20 s; is its display being woken?");
-            return;
+            return false;
         }
     }
+}
+
+/// Where the monitor is, as the Mac mini sees it: `here` on its own input,
+/// `away` on another one, `unknown` when the monitor does not answer.
+fn monitor_place(display: &ddc::Display, hdmi_input: u16) -> &'static str {
+    match display.get(0x60) {
+        ddc::Reply::Value { current } if current == hdmi_input => "here",
+        ddc::Reply::Value { .. } => "away",
+        _ => "unknown",
+    }
+}
+
+/// Moves only the monitor to the other Mac and back; the keyboard and mouse
+/// stay where they are.
+fn monitor(config: &Config, out: &mut Output) -> Result<(), String> {
+    if config.role == Role::MacBook {
+        hud::open("Moving the monitor");
+        // If it comes here, it needs a picture to come to.
+        wake_display();
+        let answer = peer::call(&config.peer, "monitor", MONITOR_MOVE)
+            .map_err(|failure| format!("the other Mac: {}", failure.reason))?;
+        let shows = answer.lines().find_map(|line| line.strip_prefix(SHOWS)).unwrap_or("the other Mac");
+        out.line(&format!("{SHOWS}{shows}"));
+        hud::row(hud::TITLE, &format!("The monitor shows {shows}"), hud::OK, "");
+        return Ok(());
+    }
+    let display = ddc::Display::external().ok_or("no monitor found over DDC")?;
+    let target = match monitor_place(&display, config.hdmi_input) {
+        "here" => Role::MacBook,
+        "away" => Role::Mini,
+        _ => return Err("the monitor does not answer over DDC".into()),
+    };
+    hud::open(&format!("Moving the monitor to {}", mac_name(target)));
+    if target == Role::MacBook {
+        peer::call(&config.peer, "wake", client::timeout("wake"))
+            .map_err(|failure| format!("the other Mac is not ready, nothing changed ({})", failure.reason))?;
+        if !leave_hdmi(config, out) {
+            return Err("the monitor stayed on this Mac".into());
+        }
+    } else {
+        wake_display();
+        bt::spin(0.3);
+        if !display.set(0x60, config.hdmi_input) {
+            return Err("the monitor did not take the DDC command".into());
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while monitor_place(&display, config.hdmi_input) != "here" {
+            if Instant::now() >= deadline {
+                return Err("the monitor did not come to this Mac".into());
+            }
+            bt::spin(0.5);
+        }
+    }
+    // Away from the devices on purpose: `keep_monitor` leaves it alone.
+    let devices_here = config.devices.iter().any(|address| crate::hid::is_live(address));
+    PEEK.store((target == Role::Mini) != devices_here, Ordering::SeqCst);
+    out.line(&format!("{SHOWS}{}", mac_name(target)));
+    hud::row(hud::TITLE, &format!("The monitor shows {}", mac_name(target)), hud::OK, "");
+    Ok(())
+}
+
+/// Prefix of the line in which `monitor` says where the monitor went.
+const SHOWS: &str = "monitor shows: ";
+
+/// When `keep_monitor` next looks, and what it saw last.
+struct MonitorWatch {
+    next: Instant,
+    was_asleep: bool,
+    /// Looks left after this Mac's display woke up.
+    after_wake: u8,
+}
+
+impl MonitorWatch {
+    fn new() -> MonitorWatch {
+        MonitorWatch { next: Instant::now(), was_asleep: false, after_wake: 0 }
+    }
+}
+
+/// Mac mini only: keeps the monitor with the keyboard and mouse.
+///
+/// The monitor (Input Select = Auto) moves by itself to the other input when
+/// the Mac it shows puts its display to sleep, and does not come back when
+/// that Mac wakes: the user returns to a keyboard on one Mac and a picture of
+/// the other. Two cases, both only while this Mac's display is awake:
+///
+/// - the devices are here and this display just woke up, but the monitor
+///   shows the MacBook: it is called back;
+/// - the devices went to the MacBook, but the monitor shows this Mac: this
+///   display is put to sleep, so the monitor returns to the MacBook, or
+///   waits for it.
+///
+/// Nothing is done after `monitor` parted the two on purpose (`PEEK`), nor
+/// when the monitor is on an input that is neither Mac's.
+fn keep_monitor(config: &Config, watch: &mut MonitorWatch) {
+    let now = Instant::now();
+    if now < watch.next || BUSY.load(Ordering::SeqCst) || PEEK.load(Ordering::SeqCst) {
+        return;
+    }
+    watch.next = now + Duration::from_secs(2);
+    if ddc::is_asleep() {
+        watch.was_asleep = true;
+        return;
+    }
+    let here = config.devices.iter().any(|address| crate::hid::is_live(address));
+    if here {
+        AWAY.store(false, Ordering::SeqCst);
+        if std::mem::take(&mut watch.was_asleep) {
+            watch.after_wake = 3;
+        }
+        if watch.after_wake == 0 {
+            return;
+        }
+        watch.after_wake -= 1;
+        watch.next = now + Duration::from_secs(4);
+        let peer_input = PEER_INPUT.load(Ordering::SeqCst);
+        let Some(display) = ddc::Display::external() else {
+            return;
+        };
+        if matches!(display.get(0x60), ddc::Reply::Value { current } if peer_input != 0 && current == peer_input) {
+            eprintln!("the monitor shows the MacBook, the devices are here: calling it back");
+            let _ = display.set(0x60, config.hdmi_input);
+        }
+    } else if AWAY.load(Ordering::SeqCst) {
+        watch.was_asleep = false;
+        watch.next = now + Duration::from_secs(10);
+        let Some(display) = ddc::Display::external() else {
+            return;
+        };
+        if monitor_place(&display, config.hdmi_input) == "here" {
+            eprintln!("the monitor shows this Mac, the devices are on the MacBook: putting this display to sleep");
+            let _ = Command::new("pmset").arg("displaysleepnow").status();
+        }
+    }
+}
+
+/// What this Mac holds, one fact per line, fields separated by tabs:
+///
+/// ```text
+/// role     <mini|macbook>
+/// device   <address>  <label>  <here|away>  <battery percent, or empty>
+/// monitor  <here|away|unknown>                 (Mac mini only)
+/// ```
+fn state() -> Vec<String> {
+    let Some(&(role, hdmi_input)) = ROLE.get() else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!("role\t{}", if role == Role::Mini { "mini" } else { "macbook" })];
+    let labels = LABELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    for (index, address) in DEVICES.get().into_iter().flatten().enumerate() {
+        let label = labels.get(index).cloned().unwrap_or_else(|| generic_label(address, index));
+        let place = if crate::hid::is_live(address) { "here" } else { "away" };
+        let battery = crate::hid::battery(address).map(|percent| percent.to_string()).unwrap_or_default();
+        lines.push(format!("device\t{address}\t{label}\t{place}\t{battery}"));
+    }
+    if role == Role::Mini {
+        let place = ddc::Display::external().map_or("unknown", |display| monitor_place(&display, hdmi_input));
+        lines.push(format!("monitor\t{place}"));
+    }
+    lines
+}
+
+/// Both Macs' `state` put together for the menu; `theirs` is `None` when the
+/// other Mac did not answer. A place is the name of a Mac, `neither` or
+/// `unknown`:
+///
+/// ```text
+/// self     <this Mac's name>
+/// other    <the other Mac's name>
+/// monitor  <place>
+/// device   <label>  <place>  <battery percent, or empty>
+/// ```
+fn overview(ours: &[String], theirs: Option<&str>) -> Vec<String> {
+    let fields = |line: &str| line.split('\t').map(String::from).collect::<Vec<_>>();
+    let ours: Vec<Vec<String>> = ours.iter().map(|line| fields(line)).collect();
+    let theirs: Option<Vec<Vec<String>>> = theirs.map(|text| text.lines().map(fields).collect());
+    let mini = ours.iter().any(|line| line[..] == ["role", "mini"]);
+    let (this, other) = if mini { ("Mac mini", "MacBook") } else { ("MacBook", "Mac mini") };
+    let mut lines = vec![format!("self\t{this}"), format!("other\t{other}")];
+
+    // Only the Mac mini knows where the monitor is.
+    let seen = if mini { Some(&ours) } else { theirs.as_ref() };
+    let place = seen
+        .and_then(|lines| lines.iter().find(|line| line.len() == 2 && line[0] == "monitor"))
+        .map_or("unknown", |line| match line[1].as_str() {
+            "here" => "Mac mini",
+            "away" => "MacBook",
+            _ => "unknown",
+        });
+    lines.push(format!("monitor\t{place}"));
+
+    let device = |line: &&Vec<String>| line.len() == 5 && line[0] == "device";
+    for mine in ours.iter().filter(device) {
+        let (address, label) = (&mine[1], &mine[2]);
+        let peer = theirs.as_ref().map(|lines| lines.iter().filter(device).find(|line| &line[1] == address));
+        let line = match peer {
+            _ if mine[3] == "here" => format!("device\t{label}\t{this}\t{}", mine[4]),
+            Some(Some(peer)) if peer[3] == "here" => format!("device\t{}\t{other}\t{}", peer[2], peer[4]),
+            Some(_) => format!("device\t{label}\tneither\t"),
+            None => format!("device\t{label}\tunknown\t"),
+        };
+        lines.push(line);
+    }
+    lines
 }
 
 /// The addresses in a `took:` line, or `None` if there is no such line.
@@ -790,6 +1163,34 @@ mod tests {
         assert!(refused_busy("error: busy: a switch is already running"));
         assert!(!refused_busy("a connected\ntook: a\nerror: x"));
         assert!(!refused_busy("error: busy: too many clients"));
+    }
+
+    #[test]
+    fn puts_both_macs_together() {
+        let ours: Vec<String> = [
+            "role\tmacbook",
+            "device\ta1\tKeyboard\there\t50",
+            "device\ta2\tMouse\taway\t",
+            "device\ta3\tPad\taway\t",
+        ]
+        .map(String::from)
+        .to_vec();
+        let theirs = "role\tmini\ndevice\ta1\tKeyboard\taway\t\ndevice\ta2\tMy mouse\there\t10\n\
+                      device\ta3\tPad\taway\t\nmonitor\there\nok";
+        assert_eq!(
+            overview(&ours, Some(theirs)),
+            [
+                "self\tMacBook",
+                "other\tMac mini",
+                "monitor\tMac mini",
+                "device\tKeyboard\tMacBook\t50",
+                "device\tMy mouse\tMac mini\t10",
+                "device\tPad\tneither\t",
+            ]
+        );
+        let alone = overview(&ours, None);
+        assert_eq!(alone[2], "monitor\tunknown");
+        assert_eq!(alone[4], "device\tMouse\tunknown\t");
     }
 
     #[test]

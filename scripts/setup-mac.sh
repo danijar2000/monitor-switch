@@ -45,7 +45,7 @@ uninstall() {
   rm -f "$STATE/agent.sock"
   untrust
   if [[ ${1:-} == --purge ]]; then
-    rm -f "$STATE"/config "$STATE"/config.bak "$STATE"/hotkey "$STATE"/peer_key "$STATE"/peer_key.pub "$STATE"/peer_secret "$STATE"/*.log(N) "$STATE"/*.log.1(N)
+    rm -f "$STATE"/config "$STATE"/config.bak "$STATE"/hotkey "$STATE"/hotkey-monitor "$STATE"/peer_input "$STATE"/peer_key "$STATE"/peer_key.pub "$STATE"/peer_secret "$STATE"/*.log(N) "$STATE"/*.log.1(N)
     rmdir "$STATE" 2>/dev/null || true
     tccutil reset Bluetooth local.monitor-switch >/dev/null 2>&1 || true
     echo "  removed, with config, logs and the Bluetooth permission"
@@ -75,6 +75,8 @@ install_from() {
   fi
   install -m 600 "$src/config" "$STATE/config"
   [[ -s $STATE/hotkey ]] || echo ctrl+enter > "$STATE/hotkey"
+  # The hotkey that moves only the monitor; "off" in the file turns it off.
+  [[ -s $STATE/hotkey-monitor ]] || echo ctrl+shift+enter > "$STATE/hotkey-monitor"
   install -m 600 "$src/peer_secret" "$STATE/peer_secret"
   # Since 0.0.5 the agents talk over HTTP; the old ssh entry and key go.
   untrust
@@ -95,7 +97,7 @@ install_from() {
       sleep 1
     done
   done
-  echo "  agent and hotkey ($(<"$STATE/hotkey")) started"
+  echo "  agent and hotkeys ($(<"$STATE/hotkey"); monitor only: $(<"$STATE/hotkey-monitor")) started"
 }
 
 case ${1:-} in

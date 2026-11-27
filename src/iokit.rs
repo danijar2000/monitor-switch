@@ -28,6 +28,8 @@ extern "C" {
     fn CFStringCompare(a: CFTypeRef, b: CFTypeRef, options: u64) -> isize;
     fn CFStringGetTypeID() -> usize;
     fn CFGetTypeID(obj: CFTypeRef) -> usize;
+    fn CFNumberGetTypeID() -> usize;
+    fn CFNumberGetValue(number: CFTypeRef, kind: isize, value: *mut i64) -> u8;
     pub fn CFRelease(obj: CFTypeRef);
 }
 
@@ -48,6 +50,23 @@ impl Drop for CfString {
         if !self.0.is_null() {
             unsafe { CFRelease(self.0) }
         }
+    }
+}
+
+/// The number property `key` of a registry entry, if it has one.
+pub fn number_property(entry: u32, key: &str) -> Option<i64> {
+    const SINT64: isize = 4; // kCFNumberSInt64Type
+    let key = CfString::new(key);
+    unsafe {
+        let property = IORegistryEntryCreateCFProperty(entry, key.0, std::ptr::null(), 0);
+        if property.is_null() {
+            return None;
+        }
+        let mut value = 0i64;
+        let read = CFGetTypeID(property) == CFNumberGetTypeID()
+            && CFNumberGetValue(property, SINT64, &mut value) != 0;
+        CFRelease(property);
+        read.then_some(value)
     }
 }
 

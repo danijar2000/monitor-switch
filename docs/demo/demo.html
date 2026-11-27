@@ -1,0 +1,279 @@
+<!doctype html>
+<!-- The animation behind docs/demo.mp4 and docs/demo.gif. It has no clock of
+     its own: render.mjs calls render(t) for every frame. Open it in a
+     browser to watch it in real time. -->
+<meta charset="utf-8">
+<title>monitor-switch demo</title>
+<style>
+  html, body { margin: 0; background: #0d1020; }
+  svg { display: block; font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif; }
+</style>
+<svg id="stage" width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="30%" r="80%">
+      <stop offset="0" stop-color="#1b2140"/><stop offset="1" stop-color="#0a0c18"/>
+    </radialGradient>
+    <linearGradient id="miniDesk" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e6fd9"/><stop offset="1" stop-color="#31c6c0"/>
+    </linearGradient>
+    <linearGradient id="bookDesk" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7b3fe4"/><stop offset="1" stop-color="#f0733c"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e6e8ee"/><stop offset="1" stop-color="#aab0bd"/>
+    </linearGradient>
+    <clipPath id="screenClip"><rect x="402" y="62" width="476" height="268" rx="6"/></clipPath>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <g id="scene">
+    <!-- cables: HDMI to the Mac mini, DisplayPort to the MacBook -->
+    <path id="cableMiniBase" d="M585 400 C585 470 250 440 250 520" fill="none" stroke="#3a4060" stroke-width="5" stroke-linecap="round"/>
+    <path id="cableBookBase" d="M695 400 C695 470 1030 440 1030 500" fill="none" stroke="#3a4060" stroke-width="5" stroke-linecap="round"/>
+    <path id="cableMini" d="M250 520 C250 440 585 470 585 400" fill="none" stroke="#39d6c8" stroke-width="5" stroke-linecap="round" stroke-dasharray="14 12" filter="url(#glow)"/>
+    <path id="cableBook" d="M1030 500 C1030 440 695 470 695 400" fill="none" stroke="#ff9a5c" stroke-width="5" stroke-linecap="round" stroke-dasharray="14 12" filter="url(#glow)"/>
+
+    <!-- Bluetooth links from the keyboard and the mouse to each Mac -->
+    <g fill="none" stroke="#5aa2ff" stroke-width="3" stroke-dasharray="3 9" stroke-linecap="round">
+      <path id="kbMini" d="M560 600 C480 600 400 588 336 550"/>
+      <path id="kbBook" d="M700 570 C760 528 880 532 936 550"/>
+      <path id="msMini" d="M765 572 C720 540 450 522 336 532"/>
+      <path id="msBook" d="M782 600 C840 600 892 590 938 560"/>
+    </g>
+
+    <!-- the monitor -->
+    <g filter="url(#shadow)">
+      <rect x="390" y="50" width="500" height="296" rx="14" fill="#15171f" stroke="#2b2f3d" stroke-width="2"/>
+      <rect x="610" y="346" width="60" height="26" fill="#22252f"/>
+      <rect x="540" y="370" width="200" height="10" rx="5" fill="#2b2f3d"/>
+    </g>
+    <g clip-path="url(#screenClip)">
+      <g id="deskMini">
+        <rect x="402" y="62" width="476" height="268" fill="url(#miniDesk)"/>
+        <rect x="402" y="62" width="476" height="16" fill="#000" opacity="0.28"/>
+        <text x="640" y="172" text-anchor="middle" font-size="44" font-weight="700" fill="#fff">Mac mini</text>
+        <text x="640" y="199" text-anchor="middle" font-size="15" fill="#fff" opacity="0.8">on HDMI</text>
+      </g>
+      <g id="deskBook">
+        <rect x="402" y="62" width="476" height="268" fill="url(#bookDesk)"/>
+        <rect x="402" y="62" width="476" height="16" fill="#000" opacity="0.28"/>
+        <text x="640" y="172" text-anchor="middle" font-size="44" font-weight="700" fill="#fff">MacBook</text>
+        <text x="640" y="199" text-anchor="middle" font-size="15" fill="#fff" opacity="0.8">on DisplayPort</text>
+      </g>
+      <!-- the menu bar icon -->
+      <g id="menuIcon" transform="translate(846 66)">
+        <rect x="0" y="0" width="13" height="8" rx="1.5" fill="none" stroke="#fff" stroke-width="1.3"/>
+        <rect x="4.5" y="9" width="4" height="1.6" fill="#fff"/>
+      </g>
+      <!-- the panel -->
+      <g id="panel">
+        <rect id="panelBox" width="206" rx="10" fill="#1d1f29" opacity="0.94" stroke="#ffffff22"/>
+        <g id="rowTitle" transform="translate(12 12)"></g>
+        <g id="rowKb" transform="translate(12 38)"></g>
+        <g id="rowMs" transform="translate(12 62)"></g>
+      </g>
+    </g>
+
+    <!-- the monitor's inputs -->
+    <g font-size="13" font-weight="600" text-anchor="middle">
+      <g id="portMini">
+        <rect x="548" y="386" width="74" height="24" rx="6" fill="#12333a" stroke="#39d6c8" stroke-width="1.5"/>
+        <text x="585" y="403" fill="#8ff0e6">HDMI</text>
+      </g>
+      <g id="portBook">
+        <rect x="644" y="386" width="102" height="24" rx="6" fill="#3a2414" stroke="#ff9a5c" stroke-width="1.5"/>
+        <text x="695" y="403" fill="#ffc9a3">DisplayPort</text>
+      </g>
+    </g>
+    <text id="oneMonitor" x="640" y="36" text-anchor="middle" font-size="15" font-weight="600" fill="#9aa3c7" letter-spacing="1.5">ONE MONITOR · TWO INPUTS</text>
+
+    <!-- Mac mini -->
+    <g filter="url(#shadow)">
+      <rect id="miniGlow" x="166" y="508" width="168" height="62" rx="16" fill="none" stroke="#39d6c8" stroke-width="3" filter="url(#glow)"/>
+      <rect x="170" y="512" width="160" height="54" rx="13" fill="url(#metal)"/>
+      <circle cx="250" cy="539" r="7" fill="#8a909c"/>
+    </g>
+    <text x="250" y="596" text-anchor="middle" font-size="19" font-weight="600" fill="#e9ecf7">Mac mini</text>
+
+    <!-- MacBook -->
+    <g filter="url(#shadow)">
+      <rect id="bookGlow" x="951" y="446" width="158" height="104" rx="10" fill="none" stroke="#ff9a5c" stroke-width="3" filter="url(#glow)"/>
+      <rect x="955" y="450" width="150" height="96" rx="8" fill="#1a1c25" stroke="#c9cdd8" stroke-width="3"/>
+      <rect x="962" y="457" width="136" height="82" rx="3" fill="url(#bookDesk)" opacity="0.55"/>
+      <path d="M935 548 h190 l-8 14 h-174 z" fill="url(#metal)"/>
+    </g>
+    <text x="1030" y="596" text-anchor="middle" font-size="19" font-weight="600" fill="#e9ecf7">MacBook</text>
+
+    <!-- keyboard and mouse -->
+    <g filter="url(#shadow)">
+      <rect x="560" y="570" width="170" height="56" rx="9" fill="url(#metal)"/>
+      <g id="keys" fill="#f7f8fb"></g>
+      <rect x="748" y="572" width="34" height="54" rx="17" fill="url(#metal)"/>
+    </g>
+    <text x="671" y="648" text-anchor="middle" font-size="13" fill="#9aa3c7">Bluetooth keyboard and mouse</text>
+
+    <!-- the keys being pressed -->
+    <g id="caps" font-size="18" font-weight="600" text-anchor="middle"></g>
+  </g>
+
+  <text id="caption" x="640" y="694" text-anchor="middle" font-size="22" font-weight="500" fill="#f2f4fb"></text>
+
+  <!-- title and end cards -->
+  <g id="title" text-anchor="middle">
+    <text x="640" y="320" font-size="64" font-weight="700" fill="#fff">One monitor. Two Macs.</text>
+    <text x="640" y="392" font-size="40" font-weight="500" fill="#8fb4ff">One hotkey.</text>
+  </g>
+  <g id="end" text-anchor="middle">
+    <text x="640" y="300" font-size="58" font-weight="700" fill="#fff">monitor-switch</text>
+    <text x="640" y="356" font-size="25" fill="#c5cbe3">Share one monitor, keyboard and mouse between two Macs.</text>
+    <text x="640" y="394" font-size="25" fill="#c5cbe3">No KVM switch. No cables to move.</text>
+    <text x="640" y="460" font-size="22" font-weight="600" fill="#8fb4ff">github.com/danijar2000/monitor-switch</text>
+  </g>
+</svg>
+<script>
+const $ = id => document.getElementById(id);
+const clamp = x => Math.max(0, Math.min(1, x));
+// 0 before `a`, 1 after `b`, eased in between.
+const ramp = (t, a, b) => { const x = clamp((t - a) / (b - a)); return x * x * (3 - 2 * x); };
+// 1 between `a` and `b`, with fades of `f` seconds at both ends.
+const during = (t, a, b, f = 0.35) => Math.min(ramp(t, a, a + f), 1 - ramp(t, b - f, b));
+
+// Small keys on the keyboard.
+{
+  let keys = "";
+  for (let row = 0; row < 3; row++)
+    for (let col = 0; col < 11; col++)
+      keys += `<rect x="${568 + col * 14}" y="${578 + row * 14}" width="11" height="11" rx="2"/>`;
+  $("keys").innerHTML = keys;
+}
+
+// The timeline, in seconds. Each switch: [start, what moves, where to].
+const SWITCHES = [
+  { at: 7.4, devices: true, to: 1, keys: ["Control", "Enter"] },
+  { at: 15.0, devices: true, to: 0, keys: ["Control", "Enter"] },
+  { at: 20.6, devices: false, to: 1, keys: ["Control", "Shift", "Enter"] },
+];
+const SWITCH_TIME = 3.6;
+const LENGTH = 28;
+const CAPTIONS = [
+  [2.9, 7.0, "The monitor has several inputs: the Mac mini on HDMI, the MacBook on DisplayPort."],
+  [7.0, 8.6, "Press Control + Enter."],
+  [8.6, 12.0, "The keyboard and mouse pair with the MacBook, and the monitor changes its input."],
+  [12.0, 14.6, "Everything is on the MacBook. No KVM switch, no cables to move."],
+  [14.6, 19.8, "Press it again to go back to the Mac mini."],
+  [20.0, 24.6, "Control + Shift + Enter moves only the monitor, to look at the other Mac."],
+];
+const NAMES = ["Mac mini", "MacBook"];
+
+function check(done, t) {
+  if (done) return `<circle cx="7" cy="7" r="7" fill="#34c759"/><path d="M3.6 7.3l2.3 2.3 4.5-4.8" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>`;
+  return `<circle cx="7" cy="7" r="5.5" fill="none" stroke="#ffffff33" stroke-width="2"/>
+          <path d="M7 1.5a5.5 5.5 0 0 1 5.5 5.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" transform="rotate(${(t * 540) % 360} 7 7)"/>`;
+}
+function row(id, done, text, bold, t) {
+  $(id).innerHTML = text === "" ? "" :
+    check(done, t) + `<text x="22" y="11.5" font-size="${bold ? 11.5 : 11}" font-weight="${bold ? 700 : 500}" fill="#fff">${text}</text>`;
+}
+
+function render(t) {
+  // Where everything is: 0 on the Mac mini, 1 on the MacBook.
+  let monitor = 0, keyboard = 0, mouse = 0, panel = 0, active = null, progress = 0;
+  for (const s of SWITCHES) {
+    const p = (t - s.at) / SWITCH_TIME;
+    const from = 1 - s.to;
+    const move = (a, b) => from + (s.to - from) * ramp(p, a, b);
+    if (p >= 0) {
+      monitor = move(0.12, 0.42);
+      if (s.devices) { keyboard = move(0.2, 0.52); mouse = move(0.48, 0.8); }
+    }
+    const shown = during(t, s.at, s.at + SWITCH_TIME + 1.3, 0.3);
+    if (shown > 0) { panel = shown; active = s; progress = p; }
+  }
+
+  $("deskMini").style.opacity = 1 - monitor;
+  $("deskBook").style.opacity = monitor;
+  $("cableMini").style.opacity = 1 - monitor;
+  $("cableBook").style.opacity = monitor;
+  for (const id of ["cableMini", "cableBook"]) $(id).style.strokeDashoffset = -t * 60;
+  $("portMini").style.opacity = 0.45 + 0.55 * (1 - monitor);
+  $("portBook").style.opacity = 0.45 + 0.55 * monitor;
+  $("kbMini").style.opacity = 1 - keyboard;
+  $("kbBook").style.opacity = keyboard;
+  $("msMini").style.opacity = 1 - mouse;
+  $("msBook").style.opacity = mouse;
+  for (const id of ["kbMini", "kbBook", "msMini", "msBook"]) $(id).style.strokeDashoffset = -t * 30;
+  const held = (keyboard + mouse) / 2;
+  $("miniGlow").style.opacity = 1 - held;
+  $("bookGlow").style.opacity = held;
+  // The menu bar icon is dimmed on the Mac that does not hold the devices.
+  $("menuIcon").style.opacity = Math.abs(monitor - held) < 0.5 ? 0.95 : 0.4;
+
+  $("panel").style.opacity = panel;
+  if (active) {
+    // One row when only the monitor moves.
+    const height = active.devices ? 88 : 38;
+    $("panelBox").setAttribute("height", height);
+    $("panel").setAttribute("transform", `translate(662 ${320 - height})`);
+    const name = NAMES[active.to];
+    if (active.devices) {
+      row("rowTitle", progress > 0.86, progress > 0.86 ? `Switched to ${name}` : `Switching to ${name}`, true, t);
+      row("rowKb", progress > 0.54, "Magic Keyboard · 50%", false, t);
+      row("rowMs", progress > 0.82, "Magic Mouse · 82%", false, t);
+    } else {
+      row("rowTitle", progress > 0.5, progress > 0.5 ? `The monitor shows ${name}` : `Moving the monitor to ${name}`, true, t);
+      row("rowKb", true, "", false, t);
+      row("rowMs", true, "", false, t);
+    }
+  }
+
+  // The keys, shown from a little before each switch.
+  let caps = "";
+  for (const s of SWITCHES) {
+    const shown = during(t, s.at - 0.9, s.at + 1.0, 0.25);
+    if (shown <= 0) continue;
+    const down = during(t, s.at - 0.25, s.at + 0.35, 0.12);
+    const widths = s.keys.map(key => 34 + key.length * 11);
+    let x = 645 - (widths.reduce((a, b) => a + b, 0) + (s.keys.length - 1) * 26) / 2;
+    s.keys.forEach((key, index) => {
+      const w = widths[index];
+      caps += `<g opacity="${shown}" transform="translate(0 ${down * 4})">
+        <rect x="${x}" y="${470 + 5 * (1 - down)}" width="${w}" height="46" rx="10" fill="#0b0d16"/>
+        <rect x="${x}" y="470" width="${w}" height="46" rx="10" fill="${down > 0.5 ? "#8fb4ff" : "#f4f6fb"}"/>
+        <text x="${x + w / 2}" y="499" fill="#151826">${key}</text></g>`;
+      if (index < s.keys.length - 1)
+        caps += `<text x="${x + w + 13}" y="499" fill="#fff" opacity="${shown}">+</text>`;
+      x += w + 26;
+    });
+  }
+  $("caps").innerHTML = caps;
+
+  let caption = "", captionShown = 0;
+  for (const [from, to, text] of CAPTIONS) {
+    const shown = during(t, from, to, 0.3);
+    if (shown > captionShown) { captionShown = shown; caption = text; }
+  }
+  $("caption").textContent = caption;
+  $("caption").style.opacity = captionShown;
+
+  $("title").style.opacity = 1 - ramp(t, 2.1, 2.7);
+  $("end").style.opacity = ramp(t, 25.2, 25.8);
+  $("scene").style.opacity = Math.min(ramp(t, 2.5, 3.2), 1 - ramp(t, 24.6, 25.2));
+}
+
+window.LENGTH = LENGTH;
+window.render = render;
+// Watched in a browser: play in real time, over and over.
+if (!navigator.webdriver && !location.hash.includes("still")) {
+  const start = performance.now();
+  const frame = now => { render(((now - start) / 1000) % LENGTH); requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+} else {
+  render(0);
+}
+</script>

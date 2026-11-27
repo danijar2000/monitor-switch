@@ -11,13 +11,21 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 /// Commands one Mac may send the other (see `server`).
-pub const PEER_COMMANDS: [&str; 5] = ["ping", "held", "status", "arrive", "handover"];
+pub const PEER_COMMANDS: [&str; 8] =
+    ["ping", "held", "status", "arrive", "handover", "state", "wake", "monitor"];
 
 /// How long to wait for the agent's answer to `command`.
 pub fn timeout(command: &str) -> Duration {
     match command {
-        "ping" | "held" => Duration::from_secs(5),
+        "ping" | "held" | "state" | "wake" => Duration::from_secs(5),
+        // Its own `state` and the other Mac's.
+        "overview" => Duration::from_secs(15),
+        // A `ping` to the other Mac with the margins of that call.
+        "reach" => Duration::from_secs(25),
         "status" => Duration::from_secs(30),
+        // On the MacBook this is the Mac mini's `monitor` (see
+        // `agent::MONITOR_MOVE`) plus the margins of the call to it.
+        "monitor" => Duration::from_secs(70),
         // Pairing the devices: up to 45 s each plus the contact spacing.
         "arrive" => Duration::from_secs(150),
         // A hand-over at its worst: settle 3 s, ping 5 s, release 6 s, the
