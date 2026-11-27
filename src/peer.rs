@@ -24,6 +24,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 pub struct Failure {
     pub stdout: String,
     pub reason: String,
+    /// False only when the other Mac certainly did not run the command: the
+    /// call could not be made or sent, or the other Mac refused it in a
+    /// signed answer before running it.
+    pub delivered: bool,
 }
 
 /// A call in flight; `wait` collects it.
@@ -36,10 +40,7 @@ pub struct Call {
 /// `other-mac.local`, optionally with `:port`); `timeout` is how long that
 /// command may take there.
 pub fn start(peer: &str, command: &str, timeout: Duration) -> Result<Call, Failure> {
-    let secret = auth::load_secret().map_err(|reason| Failure {
-        stdout: String::new(),
-        reason,
-    })?;
+    let secret = auth::load_secret().map_err(not_sent)?;
     let (peer, command) = (peer.to_string(), command.to_string());
     let worker = thread::spawn(move || exchange(&peer, &command, &secret, timeout + MARGIN));
     Ok(Call {
@@ -48,10 +49,20 @@ pub fn start(peer: &str, command: &str, timeout: Duration) -> Result<Call, Failu
     })
 }
 
+/// The command may have run on the other Mac, but its answer is unknown.
 fn fail(reason: impl Into<String>) -> Failure {
     Failure {
         stdout: String::new(),
         reason: reason.into(),
+        delivered: true,
+    }
+}
+
+/// The command certainly did not reach the other Mac.
+fn not_sent(reason: impl Into<String>) -> Failure {
+    Failure {
+        delivered: false,
+        ..fail(reason)
     }
 }
 
@@ -63,10 +74,10 @@ fn addresses(peer: &str) -> Result<Vec<SocketAddr>, Failure> {
         _ => (peer, server::PORT).to_socket_addrs(),
     };
     let addresses: Vec<_> = resolved
-        .map_err(|error| fail(format!("cannot find {peer} on the network ({error})")))?
+        .map_err(|error| not_sent(format!("cannot find {peer} on the network ({error})")))?
         .collect();
     if addresses.is_empty() {
-        return Err(fail(format!("cannot find {peer} on the network")));
+        return Err(not_sent(format!("cannot find {peer} on the network")));
     }
     Ok(addresses)
 }
@@ -79,7 +90,7 @@ fn connect(peer: &str) -> Result<TcpStream, Failure> {
             Err(error) => last = format!("{address}: {error}"),
         }
     }
-    Err(fail(format!(
+    Err(not_sent(format!(
         "cannot connect to {peer} ({last}); is its agent running?"
     )))
 }
@@ -96,19 +107,40 @@ fn exchange(peer: &str, command: &str, secret: &[u8], limit: Duration) -> Result
         "POST /{command} HTTP/1.1\r\nHost: {peer}\r\nX-Time: {time}\r\nX-Nonce: {nonce}\r\n\
          X-Signature: {signature}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     )
-    .map_err(|error| fail(format!("cannot send to {peer}: {error}")))?;
+    .map_err(|error| not_sent(format!("cannot send to {peer}: {error}")))?;
     let mut answer = String::new();
     let read = stream.take(1 << 20).read_to_string(&mut answer);
-    let body = answer
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    match read {
-        Err(error) if body.is_empty() => Err(fail(format!("no answer from {peer}: {error}"))),
-        _ => verdict(body),
+    let Some((head, body)) = answer.split_once("\r\n\r\n") else {
+        return Err(fail(match read {
+            Err(error) => format!("no answer from {peer}: {error}"),
+            Ok(_) => format!("{peer} closed the connection without an answer"),
+        }));
+    };
+    let body = body.trim().to_string();
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(0);
+    let signature = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("x-signature").then(|| value.trim())
+        })
+        .unwrap_or("");
+    // A cut-off or forged answer is not trusted at all: not even its took: line.
+    if !auth::answer_is_genuine(secret, &nonce, status, &body, signature) {
+        return Err(fail(match read {
+            Err(error) => format!("the answer from {peer} was cut off ({error})"),
+            Ok(_) => format!("the answer from {peer} is not signed with the shared secret"),
+        }));
     }
+    let refused_before_running = matches!(status, 400 | 403 | 404);
+    verdict(body).map_err(|failure| Failure {
+        delivered: !refused_before_running,
+        ..failure
+    })
 }
 
 /// `Ok` only when the last line is `ok`; the body is kept either way.
@@ -125,6 +157,7 @@ fn verdict(body: String) -> Result<String, Failure> {
     Err(Failure {
         stdout: body,
         reason,
+        delivered: true,
     })
 }
 

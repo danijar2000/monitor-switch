@@ -24,7 +24,7 @@ use crate::bt;
 use crate::client;
 use crate::config::{self, Config, Role};
 use crate::ddc;
-use crate::notify::notify;
+use crate::hud;
 use crate::peer;
 use std::ffi::c_int;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -149,6 +149,10 @@ pub fn run() -> Result<(), StartError> {
     let config = Config::load().map_err(StartError::Permanent)?;
     let listener = bind_socket()?;
     let secret = crate::auth::load_secret().map_err(StartError::Permanent)?;
+    crate::auth::set_role(match config.role {
+        Role::MacBook => "macbook",
+        Role::Mini => "mini",
+    });
     let network = crate::server::listen().map_err(StartError::Transient)?;
     let (sender, receiver) = mpsc::channel::<Request>();
     let _ = REQUESTS.set(sender.clone());
@@ -376,6 +380,13 @@ fn serve(config: &Config, request: Request) {
     .unwrap_or_else(|_| Err("internal error (see agent.log)".into()));
     if changes_hands {
         BUSY.store(false, Ordering::SeqCst);
+        match &result {
+            Ok(()) => hud::done(),
+            // The other Mac asked this one, which has nothing: it says so to
+            // that Mac, which goes on from there; no panel here.
+            Err(error) if error == NOT_HOLDING => {}
+            Err(error) => hud::failed(&readable(config, error)),
+        }
     }
     match result {
         Ok(()) => out.line("ok"),
@@ -416,6 +427,8 @@ fn holds_devices(config: &Config) -> bool {
 
 /// This Mac is becoming the active one: show its picture and take the devices.
 fn arrive(config: &Config, out: &mut Output) -> Result<(), String> {
+    hud::open(&format!("Switching to {}", mac_name(config.role)));
+    show_devices(&config.devices);
     // Wake the display: in Auto mode the monitor only settles on an input
     // that carries a signal.
     spawn_detached(Command::new("caffeinate").args(["-u", "-t", "3"]));
@@ -430,7 +443,66 @@ fn arrive(config: &Config, out: &mut Output) -> Result<(), String> {
     }
     let result = take_devices(&config.devices, out);
     mark_handover();
+    // On failure the title stays in progress and turns red with the error.
+    if result.is_ok() {
+        hud::row(hud::TITLE, &format!("Switched to {}", mac_name(config.role)), hud::OK, "");
+    }
     result
+}
+
+/// An error for the panel: device names in place of their addresses.
+fn readable(config: &Config, error: &str) -> String {
+    let mut text = error.to_string();
+    for (index, address) in config.devices.iter().enumerate() {
+        text = text.replace(address.as_str(), &device_label(address, index));
+    }
+    sentence(&text)
+}
+
+/// An error text as the panel shows it: with a capital first letter.
+fn sentence(text: &str) -> String {
+    let mut letters = text.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => String::new(),
+    }
+}
+
+/// What the panel calls a Mac.
+fn mac_name(role: Role) -> &'static str {
+    match role {
+        Role::Mini => "Mac mini",
+        Role::MacBook => "MacBook",
+    }
+}
+
+fn other_role(role: Role) -> Role {
+    match role {
+        Role::Mini => Role::MacBook,
+        Role::MacBook => Role::Mini,
+    }
+}
+
+/// The name the panel shows for the device at `index` of the configured
+/// list. A Mac that never had the device paired knows only its address;
+/// the list is keyboard first, so the place in it says what the device is.
+fn device_label(address: &str, index: usize) -> String {
+    let name = bt::Device::with_address(address).map(|device| device.name()).unwrap_or_default();
+    if name.is_empty() || bt::normalize(&name).is_some() {
+        return match index {
+            0 => "Keyboard".into(),
+            1 => "Mouse".into(),
+            _ => address.to_string(),
+        };
+    }
+    name
+}
+
+/// Puts a row for every device on the panel, in progress.
+fn show_devices(addresses: &[String]) {
+    for (index, address) in addresses.iter().enumerate() {
+        hud::row(address, &device_label(address, index), hud::BUSY, "");
+    }
 }
 
 /// Pairs the devices, keyboard first, and always reports which ones arrived.
@@ -452,14 +524,18 @@ fn take_devices(addresses: &[String], out: &mut Output) -> Result<(), String> {
                 bt::spin(0.2);
             }
         }
-        let name = device.name();
-        let mut ask_to_wake = || notify(&format!("Move or click {name} to wake it"));
+        hud::row(address, "", hud::BUSY, "");
+        let mut ask_to_wake = || hud::row(address, "", hud::BUSY, "Not answering. Click it, or switch it off and on");
         match device.take(TAKE_TIMEOUT, &mut ask_to_wake) {
             Ok(()) => {
+                hud::row(address, "", hud::OK, "");
                 out.line(&format!("{} connected", device.address));
                 took.push(device.address);
             }
-            Err(error) => failures.push(format!("{}: {error}", device.address)),
+            Err(error) => {
+                hud::row(address, "", hud::FAIL, &sentence(&error));
+                failures.push(format!("{}: {error}", device.address));
+            }
         }
     }
     out.line(&format!("{TOOK}{}", took.join(",")));
@@ -483,6 +559,9 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
     if !devices.iter().any(|device| device.is_paired() && device.is_usable()) {
         return Err(NOT_HOLDING.into());
     }
+    let other = mac_name(other_role(config.role));
+    hud::open(&format!("Switching to {other}"));
+    show_devices(&config.devices);
     // Never let go of the keyboard before the other side is known to answer
     // and not to be switching itself.
     peer::call(&config.peer, "ping", client::timeout("ping")).map_err(|failure| {
@@ -498,7 +577,9 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
             bt::spin(0.1);
         }
         out.line("taking the devices back");
-        let _ = take_devices(&config.devices, out);
+        if let Err(back) = take_devices(&config.devices, out) {
+            return Err(format!("{error}; taking back: {back}"));
+        }
         return Err(error);
     }
     mark_handover();
@@ -518,6 +599,10 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
         out.line(&format!("peer: {line}"));
     }
     let Err(failure) = reply else {
+        hud::row(hud::TITLE, &format!("Switched to {other}"), hud::OK, "");
+        for address in &config.devices {
+            hud::row(address, "", hud::OK, "");
+        }
         return Ok(());
     };
 
@@ -528,9 +613,10 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
     // take nothing.
     let held = match parse_took(&stdout) {
         Some(held) => held,
-        // Refused before it began: it took nothing, so everything comes back
-        // here. Asking `held` would only get busy again.
-        None if refused_busy(&stdout) => Vec::new(),
+        // Refused before it began, or never got the call at all: it took
+        // nothing, so everything comes back here. Asking `held` would only
+        // get busy again, or fail the same way.
+        None if refused_busy(&stdout) || !failure.delivered => Vec::new(),
         None => match peer::call(&config.peer, "held", client::timeout("held")) {
             Ok(held) => parse_held(&held),
             Err(query) => {
@@ -544,9 +630,20 @@ fn hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
     };
     let missing: Vec<String> =
         config.devices.iter().filter(|address| !held.contains(address)).cloned().collect();
+    for address in &held {
+        hud::row(address, "", hud::OK, &format!("On {other}"));
+    }
     if !missing.is_empty() {
         out.line("the other Mac did not take everything, taking the rest back");
-        if let Err(error) = take_devices(&missing, out) {
+        let back = take_devices(&missing, out);
+        for address in &missing {
+            let here = bt::Device::with_address(address)
+                .is_ok_and(|device| device.is_paired() && device.is_usable());
+            if here {
+                hud::row(address, "", hud::WARN, "Stayed on this Mac");
+            }
+        }
+        if let Err(error) = back {
             return Err(format!("the other Mac: {}; taking back: {error}", failure.reason));
         }
     }
@@ -606,6 +703,9 @@ fn release(devices: &[bt::Device], out: &mut Output) -> Result<(), String> {
 /// once it is free again. The wait runs on its own thread and so sleeps
 /// instead of turning the run loop (see `peer::Call::wait`).
 fn ask_peer_to_hand_over(config: &Config, out: &mut Output) -> Result<(), String> {
+    // The panel stays up after this request is answered: the other Mac's
+    // `arrive` replaces it, or the thread below reports the failure in it.
+    hud::open(&format!("Switching to {}", mac_name(config.role)));
     let call = peer::start(&config.peer, "handover", client::timeout("handover"))
         .map_err(|failure| failure.reason)?;
     thread::spawn(move || {
@@ -622,11 +722,12 @@ fn ask_peer_to_hand_over(config: &Config, out: &mut Output) -> Result<(), String
                     });
                 }
             } else {
-                notify(&format!("The other Mac did not hand over: {}", failure.reason));
+                hud::failed(&format!("The other Mac did not hand over: {}", failure.reason));
             }
         }
     });
     out.line("asked the other Mac to hand over");
+    hud::keep_open();
     Ok(())
 }
 

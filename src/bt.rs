@@ -220,6 +220,41 @@ impl Device {
         !self.is_paired() && !self.is_connected() && !self.is_usable()
     }
 
+    /// Searches for nearby devices for `seconds`, as Bluetooth settings do
+    /// before pairing, and says whether this device answered. The search
+    /// also refreshes what this Mac knows about reaching the device, which a
+    /// pairing that went unanswered may have been missing.
+    fn seen_nearby(&self, seconds: f64) -> bool {
+        unsafe {
+            let inquiry = msg!(
+                Id,
+                class("IOBluetoothDeviceInquiry"),
+                "inquiryWithDelegate:",
+                std::ptr::null_mut::<c_void>() => Id
+            );
+            if inquiry.is_null() {
+                return false;
+            }
+            let _ = msg!(u8, inquiry, "setInquiryLength:", seconds.clamp(1.0, 10.0) as u8 => u8);
+            msg!((), inquiry, "setUpdateNewDeviceNames:", false => bool);
+            if msg!(i32, inquiry, "start") != 0 {
+                return false;
+            }
+            spin(seconds + 0.5);
+            let _ = msg!(i32, inquiry, "stop");
+            let found = msg!(Id, inquiry, "foundDevices");
+            if found.is_null() {
+                return false;
+            }
+            let count = msg!(usize, found, "count");
+            (0..count).any(|index| {
+                let device = msg!(Id, found, "objectAtIndex:", index => usize);
+                normalize(&rust_string(msg!(Id, device, "addressString"))).as_deref()
+                    == Some(self.address.as_str())
+            })
+        }
+    }
+
     /// True when the device is attached as an input device, not merely
     /// holding a radio link.
     pub fn is_usable(&self) -> bool {
@@ -263,9 +298,19 @@ impl Device {
                 let result = self.pair_once(left().min(PAIR_ATTEMPT));
                 if result != 0 {
                     last_error = format!("pairing failed ({})", io_return(result));
-                    if result == PAIR_PENDING && !asked {
-                        asked = true;
-                        on_no_answer();
+                    if result == PAIR_PENDING {
+                        if !asked {
+                            asked = true;
+                            on_no_answer();
+                        }
+                        if left() > SEARCH + 1.0 {
+                            let seen = self.seen_nearby(SEARCH);
+                            eprintln!(
+                                "{}: no answer to pairing; a search nearby {} it",
+                                self.address,
+                                if seen { "finds" } else { "does not find" }
+                            );
+                        }
                     }
                 } else if self.wait_usable(left().min(8.0)) {
                     // bluetoothd finished the connection it began with the pairing.
@@ -314,6 +359,9 @@ fn io_return(code: i32) -> String {
 /// in one or two.
 const PAIR_ATTEMPT: f64 = 6.0;
 
+/// How long to search for a device that did not answer, in seconds.
+const SEARCH: f64 = 4.0;
+
 /// Sentinel: the pairing has not reported a result yet.
 const PAIR_PENDING: i32 = i32::MIN;
 static PAIR_RESULT: AtomicI32 = AtomicI32::new(PAIR_PENDING);
@@ -332,9 +380,33 @@ extern "C" fn pairing_finished(_this: Id, _cmd: Sel, sender: Id, error: i32) {
 
 /// Keyboards and mice pair with "just works" confirmation: accept it.
 extern "C" fn pairing_confirm(_this: Id, _cmd: Sel, sender: Id, _numeric_value: u32) {
+    eprintln!("pairing: confirmation asked");
     unsafe {
         msg!((), sender, "replyUserConfirmation:", true => bool);
     }
+}
+
+/// A mouse that falls back to the old PIN pairing expects "0000". Without
+/// an answer the pairing would hang until it times out.
+extern "C" fn pairing_pin(_this: Id, _cmd: Sel, sender: Id) {
+    eprintln!("pairing: PIN asked");
+    let mut pin = [0u8; 16];
+    pin[..4].copy_from_slice(b"0000");
+    unsafe {
+        msg!((), sender, "replyPINCode:PINCode:", 4usize => usize, pin.as_ptr() => *const u8);
+    }
+}
+
+extern "C" fn pairing_started(_this: Id, _cmd: Sel, _sender: Id) {
+    eprintln!("pairing: started");
+}
+
+extern "C" fn pairing_connecting(_this: Id, _cmd: Sel, _sender: Id) {
+    eprintln!("pairing: connecting");
+}
+
+extern "C" fn pairing_connected(_this: Id, _cmd: Sel, _sender: Id) {
+    eprintln!("pairing: keys agreed");
 }
 
 fn pair_delegate_class() -> Id {
@@ -359,6 +431,15 @@ fn pair_delegate_class() -> Id {
             pairing_confirm as *const c_void,
             confirm_types.as_ptr(),
         );
+        let plain_types = CString::new("v@:@").unwrap();
+        for (name, function) in [
+            ("devicePairingPINCodeRequest:", pairing_pin as *const c_void),
+            ("devicePairingStarted:", pairing_started as *const c_void),
+            ("devicePairingConnecting:", pairing_connecting as *const c_void),
+            ("deviceSimplePairingComplete:status:", pairing_connected as *const c_void),
+        ] {
+            class_addMethod(new_class, sel(name), function, plain_types.as_ptr());
+        }
         objc_registerClassPair(new_class);
         new_class
     }

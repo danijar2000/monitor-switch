@@ -9,11 +9,11 @@
 
 use crate::auth;
 use crate::client::{self, PEER_COMMANDS};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The port both agents listen on.
 pub const PORT: u16 = 47811;
@@ -22,6 +22,10 @@ pub const PORT: u16 = 47811;
 const MAX_HEAD: u64 = 4096;
 
 const MAX_CALLS: usize = 8;
+
+/// The whole request head must arrive within this time, so a caller that
+/// sends it a byte at a time cannot hold a slot.
+const HEAD_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Listens on every interface, IPv4 and IPv6.
 pub fn listen() -> Result<TcpListener, String> {
@@ -77,25 +81,35 @@ struct Head {
     signature: String,
 }
 
-fn read_head(stream: &TcpStream) -> Option<Head> {
-    let mut reader = BufReader::new(stream.try_clone().ok()?.take(MAX_HEAD));
-    let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
-    let mut parts = line.split_whitespace();
+/// Reads up to the blank line that ends the head, within `HEAD_DEADLINE`.
+fn read_head_text(stream: &mut TcpStream) -> Option<String> {
+    let deadline = Instant::now() + HEAD_DEADLINE;
+    let mut head = Vec::new();
+    let mut chunk = [0u8; 512];
+    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+        let left = deadline.checked_duration_since(Instant::now())?;
+        if left.is_zero() || head.len() as u64 >= MAX_HEAD {
+            return None;
+        }
+        stream.set_read_timeout(Some(left)).ok()?;
+        let read = stream.read(&mut chunk).ok()?;
+        if read == 0 {
+            return None;
+        }
+        head.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8(head).ok()
+}
+
+fn parse_head(text: &str) -> Option<Head> {
+    let mut lines = text.split("\r\n");
+    let mut parts = lines.next()?.split_whitespace();
     if parts.next()? != "POST" {
         return None;
     }
     let command = parts.next()?.strip_prefix('/')?.to_string();
     let (mut time, mut nonce, mut signature) = (None, None, None);
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).ok()? == 0 {
-            return None;
-        }
-        let header = line.trim_end();
-        if header.is_empty() {
-            break;
-        }
+    for header in lines.take_while(|line| !line.is_empty()) {
         let (name, value) = header.split_once(':')?;
         let value = value.trim().to_string();
         match name.trim().to_ascii_lowercase().as_str() {
@@ -113,25 +127,22 @@ fn read_head(stream: &TcpStream) -> Option<Head> {
     })
 }
 
-fn respond(stream: &mut TcpStream, status: &str, lines: &[String]) {
+/// Sends the answer, signed over the caller's nonce (see `auth`).
+fn respond(stream: &mut TcpStream, secret: &[u8], nonce: &str, status: (u16, &str), lines: &[String]) {
+    let body: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    let signature = auth::sign_answer(secret, nonce, status.0, body.trim());
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 {} {}\r\nContent-Type: text/plain\r\nX-Signature: {signature}\r\n\
+         Connection: close\r\n\r\n{body}",
+        status.0, status.1
     );
-    for line in lines {
-        let _ = writeln!(stream, "{line}");
-    }
 }
 
 fn handle(mut stream: TcpStream, secret: &[u8]) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let Some(head) = read_head(&stream) else {
-        respond(
-            &mut stream,
-            "400 Bad Request",
-            &["error: bad request".into()],
-        );
+    let Some(head) = read_head_text(&mut stream).and_then(|text| parse_head(&text)) else {
+        respond(&mut stream, secret, "", (400, "Bad Request"), &["error: bad request".into()]);
         return;
     };
     let Some(command) = PEER_COMMANDS
@@ -140,7 +151,9 @@ fn handle(mut stream: TcpStream, secret: &[u8]) {
     else {
         respond(
             &mut stream,
-            "404 Not Found",
+            secret,
+            &head.nonce,
+            (404, "Not Found"),
             &[format!("error: command not allowed: {:?}", head.command)],
         );
         return;
@@ -153,7 +166,9 @@ fn handle(mut stream: TcpStream, secret: &[u8]) {
         eprintln!("refused a call from {from}: {reason}");
         respond(
             &mut stream,
-            "403 Forbidden",
+            secret,
+            &head.nonce,
+            (403, "Forbidden"),
             &[format!("error: refused: {reason}")],
         );
         return;
@@ -170,12 +185,20 @@ fn handle(mut stream: TcpStream, secret: &[u8]) {
         }
         Err(reason) => vec![format!("error: {reason}")],
     };
-    respond(&mut stream, "200 OK", &lines);
+    respond(&mut stream, secret, &head.nonce, (200, "OK"), &lines);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_local;
+    use super::{is_local, parse_head};
+
+    #[test]
+    fn reads_the_head() {
+        let head = parse_head("POST /arrive HTTP/1.1\r\nX-Time: 5\r\nX-Nonce: n\r\nx-signature: s\r\n\r\n").unwrap();
+        assert_eq!((head.command.as_str(), head.time, head.nonce.as_str(), head.signature.as_str()), ("arrive", 5, "n", "s"));
+        assert!(parse_head("GET /arrive HTTP/1.1\r\n\r\n").is_none());
+        assert!(parse_head("POST /arrive HTTP/1.1\r\nX-Time: 5\r\n\r\n").is_none());
+    }
 
     #[test]
     fn only_home_addresses_are_local() {

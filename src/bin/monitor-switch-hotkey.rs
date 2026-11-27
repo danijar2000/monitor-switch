@@ -125,12 +125,30 @@ extern "C" fn pressed(_call: *mut c_void, _event: *mut c_void, _data: *mut c_voi
             Ok(()) => eprintln!("switch ok"),
             Err(message) => {
                 eprintln!("switch failed: {message}");
-                notify(&message);
+                // The agent shows its own failures in the panel; a
+                // notification is only for when it could not.
+                if !agent_answered(&message) {
+                    notify(&message);
+                }
             }
         }
         RUNNING.store(false, Ordering::SeqCst);
     });
     0
+}
+
+/// Whether the failure is the agent's own verdict (shown in its panel), not
+/// a failure to reach it or to hear its answer.
+fn agent_answered(message: &str) -> bool {
+    const NOT_FROM_AGENT: [&str; 6] = [
+        "cannot run monitor-switch",
+        "the switch did not finish in time",
+        "the agent is not running",
+        "the agent did not answer in time",
+        "the agent closed the connection",
+        "the agent stopped before finishing",
+    ];
+    !message.is_empty() && !NOT_FROM_AGENT.iter().any(|start| message.starts_with(start))
 }
 
 /// Runs `monitor-switch switch`, giving up after `SWITCH_TIMEOUT`.

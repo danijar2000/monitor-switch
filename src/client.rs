@@ -39,13 +39,20 @@ pub fn answer(command: &str) -> Result<Vec<String>, String> {
     writeln!(stream, "{command}").map_err(|error| error.to_string())?;
     let mut lines = Vec::new();
     for line in BufReader::new(stream).lines() {
-        let line = line.map_err(|error| match error.kind() {
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                "the agent did not answer in time".to_string()
+        match line {
+            Ok(line) => lines.push(line),
+            // Keep what came before (a `took:` line, say) and end with the reason.
+            Err(error) => {
+                let reason = match error.kind() {
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                        "the agent did not answer in time".to_string()
+                    }
+                    _ => error.to_string(),
+                };
+                lines.push(format!("error: {reason}"));
+                break;
             }
-            _ => error.to_string(),
-        })?;
-        lines.push(line);
+        }
     }
     Ok(lines)
 }

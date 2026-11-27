@@ -2,13 +2,17 @@
 //!
 //! `~/.monitor-switch/peer_secret` holds 32 random bytes as hex; install.sh
 //! writes the same file on both Macs. A call carries the time, a random nonce
-//! and `HMAC-SHA256(secret, "<command>\n<time>\n<nonce>")`. The receiving
-//! agent accepts it only when the signature matches, the time is close to its
-//! own and the signature was not seen before, so a call recorded on the
-//! network cannot be sent again.
+//! and `HMAC-SHA256(secret, "<command>\n<to>\n<time>\n<nonce>")`, where `<to>`
+//! is the role of the Mac it is meant for. The receiving agent accepts it only
+//! when the signature matches for its own role, the time is close to its own
+//! and the signature was not seen before, so a call recorded on the network
+//! can neither be sent again nor be sent back to the Mac that made it.
+//!
+//! The answer is signed too, over the call's nonce, the HTTP status and the
+//! body, so nobody else on the network can answer in the other Mac's name.
 
 use std::io::Read;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How far the two Macs' clocks (and the network) may be apart.
@@ -50,15 +54,51 @@ pub fn nonce() -> String {
     to_hex(&bytes)
 }
 
-fn message(command: &str, time: u64, nonce: &str) -> String {
-    format!("{command}\n{time}\n{nonce}")
+/// This Mac's role ("mini" or "macbook"); set once when the agent starts.
+static ROLE: OnceLock<&'static str> = OnceLock::new();
+
+pub fn set_role(role: &'static str) {
+    let _ = ROLE.set(role);
 }
 
+fn me() -> &'static str {
+    ROLE.get().copied().unwrap_or("")
+}
+
+fn other() -> &'static str {
+    match me() {
+        "mini" => "macbook",
+        "macbook" => "mini",
+        _ => "",
+    }
+}
+
+fn mac(secret: &[u8], message: &str) -> String {
+    to_hex(&hmac_sha256(secret, message.as_bytes()))
+}
+
+fn call_message(command: &str, to: &str, time: u64, nonce: &str) -> String {
+    format!("{command}\n{to}\n{time}\n{nonce}")
+}
+
+/// Signs a call to the other Mac.
 pub fn sign(secret: &[u8], command: &str, time: u64, nonce: &str) -> String {
-    to_hex(&hmac_sha256(
-        secret,
-        message(command, time, nonce).as_bytes(),
-    ))
+    mac(secret, &call_message(command, other(), time, nonce))
+}
+
+fn answer_message(to: &str, nonce: &str, status: u16, body: &str) -> String {
+    format!("answer\n{to}\n{nonce}\n{status}\n{body}")
+}
+
+/// Signs this Mac's answer to the other Mac's call with `nonce`.
+pub fn sign_answer(secret: &[u8], nonce: &str, status: u16, body: &str) -> String {
+    mac(secret, &answer_message(other(), nonce, status, body))
+}
+
+/// Checks the other Mac's answer to this Mac's call with `nonce`.
+pub fn answer_is_genuine(secret: &[u8], nonce: &str, status: u16, body: &str, signature: &str) -> bool {
+    let expected = mac(secret, &answer_message(me(), nonce, status, body));
+    same(expected.as_bytes(), signature.to_ascii_lowercase().as_bytes())
 }
 
 /// Signatures accepted lately, with their times: each is good only once.
@@ -72,7 +112,7 @@ pub fn verify(
     nonce: &str,
     signature: &str,
 ) -> Result<(), &'static str> {
-    let expected = sign(secret, command, time, nonce);
+    let expected = mac(secret, &call_message(command, me(), time, nonce));
     if !same(
         expected.as_bytes(),
         signature.to_ascii_lowercase().as_bytes(),
@@ -154,8 +194,31 @@ mod tests {
         );
     }
 
+    /// Signs as the other Mac would sign a call to this one.
+    fn sign(secret: &[u8], command: &str, time: u64, nonce: &str) -> String {
+        mac(secret, &call_message(command, me(), time, nonce))
+    }
+
+    #[test]
+    fn calls_and_answers_are_bound_to_one_direction() {
+        set_role("mini");
+        let secret = [9u8; 32];
+        let time = now();
+        // A call this Mac made (to the MacBook) is refused when sent back here.
+        let own = super::sign(&secret, "arrive", time, "r1");
+        assert!(verify(&secret, "arrive", time, "r1", &own).is_err());
+        // An answer this Mac signed is not accepted as the other Mac's answer.
+        let answer = sign_answer(&secret, "r2", 200, "ok");
+        assert!(!answer_is_genuine(&secret, "r2", 200, "ok", &answer));
+        let theirs = mac(&secret, &answer_message("mini", "r2", 200, "ok"));
+        assert!(answer_is_genuine(&secret, "r2", 200, "ok", &theirs));
+        assert!(!answer_is_genuine(&secret, "r2", 200, "took: x\nok", &theirs));
+        assert!(!answer_is_genuine(&secret, "r2", 403, "ok", &theirs));
+    }
+
     #[test]
     fn accepts_a_call_once() {
+        set_role("mini");
         let secret = [7u8; 32];
         let time = now();
         let signature = sign(&secret, "ping", time, "n1");

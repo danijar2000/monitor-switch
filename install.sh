@@ -186,8 +186,10 @@ write_conf() {
     print -r -- "    $i) ${f[2]}  (${f[1]}${${f[3]:#no}:+, connected})"
     [[ ${f[3]} == yes ]] && default+="$i "
   done
-  local picks=$(ask "Which ones to move between the Macs? Numbers, keyboard first" "${default% }")
-  for i in ${(z)picks}; do
+  local picks=$(ask "Which ones to move between the Macs? Numbers" "${default% }")
+  # The list shows keyboards first; keep that order whatever order the
+  # numbers were typed in, because the agent pairs the keyboard first.
+  for i in ${(nu)${(z)picks}}; do
     [[ $i == <1-> && $i -le $#lines ]] || die "no device number $i"
     devices+=(${${(@ps:\t:)lines[i]}[1]})
   done
@@ -385,13 +387,15 @@ scp -q -o BatchMode=yes -o StrictHostKeyChecking=yes "$stage"/* "$PEER:$remote/"
 
 here_name=${ROLE_TITLE[$ROLE]} peer_name=${ROLE_TITLE[$PEER_ROLE]}
 step "Installing"
+# The other Mac first: if the network fails there, this Mac is unchanged and
+# both keep the same secret. Installing here needs no network.
+echo "$peer_name:"
+ssh_peer "zsh '$remote/setup-mac.sh' install '$remote'"
+activated="${ROLE_NAME[$PEER_ROLE]}"
+
 echo "$here_name (this Mac):"
 role_config $ROLE > "$stage/config"
 zsh "$stage/setup-mac.sh" install "$stage"
-activated="${ROLE_NAME[$ROLE]}"
-
-echo "$peer_name:"
-ssh_peer "zsh '$remote/setup-mac.sh' install '$remote'"
 activated="both Macs"
 
 # Each agent calls the other itself, so macOS may first ask on each Mac

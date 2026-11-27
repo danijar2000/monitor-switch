@@ -5,13 +5,12 @@ mod client;
 mod config;
 mod ddc;
 mod hid;
+mod hud;
 #[path = "shared/home.rs"]
 mod home;
 mod iokit;
 #[path = "shared/logfile.rs"]
 mod logfile;
-#[path = "shared/notify.rs"]
-mod notify;
 mod peer;
 mod server;
 
@@ -35,6 +34,11 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
         ["agent"] => return run_agent(),
+        // The progress panel; the agent starts it for the length of a switch.
+        ["hud"] => {
+            hud::run();
+            return ExitCode::SUCCESS;
+        }
         [command @ ("switch" | "status" | "reach" | "ping" | "held" | "arrive" | "handover")] => client::run(command),
         ["help" | "--help" | "-h"] => {
             print!("{USAGE}");
