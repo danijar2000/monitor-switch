@@ -253,7 +253,12 @@ static UI: Mutex<Option<Ui>> = Mutex::new(None);
 static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 fn main_queue() -> *const c_void {
-    std::ptr::addr_of!(_dispatch_main_q)
+    // SAFETY: only the address is taken; the static is never read here.
+    // (Rust before 1.82 needs the unsafe block for that too.)
+    #[allow(unused_unsafe)]
+    unsafe {
+        std::ptr::addr_of!(_dispatch_main_q)
+    }
 }
 
 /// Runs the panel until it is told to close or its input ends.
