@@ -111,11 +111,3 @@ does not come back. So the Mac mini calls the monitor back when it wakes up
 holding the devices, and puts its own display to sleep when the monitor
 shows it while the devices are on the MacBook. To look at the other Mac on
 purpose, use **Control+Shift+Enter**, not the monitor's buttons.
-
-## Development
-
-```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
-./install.sh    # build from source and install on both Macs
-```

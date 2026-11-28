@@ -1,4 +1,4 @@
-// Renders docs/demo/demo.html into docs/demo.mp4 and docs/demo.gif.
+// Renders docs/demo/demo.html (drawn over desk.jpg) into docs/demo.mp4 and docs/demo.gif.
 //
 //   node docs/demo/render.mjs
 //
@@ -51,12 +51,13 @@ try {
     socket.send(JSON.stringify({ id, method, params }));
   });
   const evaluate = async expression =>
-    (await send("Runtime.evaluate", { expression, returnByValue: true })).result.value;
+    (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
 
   await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
   await send("Page.navigate", { url: `file://${join(here, "demo.html")}#still` });
   while ((await evaluate("typeof window.render")) !== "function") await new Promise(done => setTimeout(done, 100));
   await evaluate("document.fonts.ready.then(() => 1)");
+  await evaluate("window.READY.then(() => 1)");
 
   const length = await evaluate("window.LENGTH");
   const frames = Math.round(length * FPS);
