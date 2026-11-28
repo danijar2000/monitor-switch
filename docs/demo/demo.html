@@ -10,7 +10,7 @@
 </style>
 <svg id="stage" width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bookWall" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="miniWall" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0f7a7a"/><stop offset="0.55" stop-color="#2aa7a0"/><stop offset="1" stop-color="#f29a4a"/>
     </linearGradient>
     <linearGradient id="shade" x1="0" y1="0" x2="0" y2="1">
@@ -34,18 +34,18 @@
 
     <!-- what the monitor shows -->
     <g clip-path="url(#screenClip)">
-      <g id="deskMini">
-        <rect x="560" y="236" width="120" height="44" rx="12" fill="#000" opacity="0.45"/>
-        <text x="620" y="265" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">Mac mini</text>
-      </g>
       <g id="deskBook">
-        <rect x="358" y="118" width="524" height="302" fill="url(#bookWall)"/>
+        <rect x="560" y="236" width="120" height="44" rx="12" fill="#000" opacity="0.45"/>
+        <text x="620" y="265" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">MacBook</text>
+      </g>
+      <g id="deskMini">
+        <rect x="358" y="118" width="524" height="302" fill="url(#miniWall)"/>
         <path d="M358 330 C470 270 560 340 680 300 C760 272 830 300 882 280 V420 H358 Z" fill="#0b3f4a" opacity="0.45"/>
         <rect x="358" y="118" width="524" height="14" fill="#000" opacity="0.3"/>
         <circle cx="373" cy="125.5" r="3" fill="#fff"/>
         <g><text x="384" y="128.5" font-size="8" font-weight="700" fill="#fff">Finder</text><text x="426" y="128.5" font-size="8" font-weight="500" fill="#fff">File</text><text x="458" y="128.5" font-size="8" font-weight="500" fill="#fff">Edit</text><text x="490" y="128.5" font-size="8" font-weight="500" fill="#fff">View</text><text x="522" y="128.5" font-size="8" font-weight="500" fill="#fff">Go</text><text x="544" y="128.5" font-size="8" font-weight="500" fill="#fff">Window</text><text x="586" y="128.5" font-size="8" font-weight="500" fill="#fff">Help</text></g>
         <rect x="560" y="236" width="120" height="44" rx="12" fill="#000" opacity="0.35"/>
-        <text x="620" y="265" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">MacBook</text>
+        <text x="620" y="265" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">Mac mini</text>
       </g>
       <!-- the menu bar icon -->
       <g id="menuIcon" transform="translate(786 121)">
@@ -170,8 +170,9 @@ function render(t) {
 
   $("deskMini").style.opacity = 1 - monitor;
   $("deskBook").style.opacity = monitor;
-  $("cableMini").style.opacity = 0.25 + 0.75 * (1 - monitor);
-  $("cableBook").style.opacity = 0.25 + 0.75 * monitor;
+  // Only the cable of the input the monitor shows is drawn.
+  $("cableMini").style.opacity = 1 - monitor;
+  $("cableBook").style.opacity = monitor;
   for (const id of ["cableMini", "cableBook"]) $(id).style.strokeDashoffset = -t * 50;
   $("portMini").style.opacity = 0.5 + 0.5 * (1 - monitor);
   $("portBook").style.opacity = 0.5 + 0.5 * monitor;

@@ -11,7 +11,7 @@ use crate::auth;
 use crate::client::{self, PEER_COMMANDS};
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,11 +21,16 @@ pub const PORT: u16 = 47811;
 /// Longest request head accepted.
 const MAX_HEAD: u64 = 4096;
 
-const MAX_CALLS: usize = 8;
+/// Calls served at once, in all and from one address. The other Mac makes
+/// at most a few calls at a time; the limit per address keeps one host on
+/// the network that opens connections and sends nothing from taking every
+/// slot before any signature is checked.
+const MAX_CALLS: usize = 16;
+const MAX_PER_ADDRESS: usize = 4;
 
 /// The whole request head must arrive within this time, so a caller that
-/// sends it a byte at a time cannot hold a slot.
-const HEAD_DEADLINE: Duration = Duration::from_secs(5);
+/// sends it a byte at a time cannot hold a slot for long.
+const HEAD_DEADLINE: Duration = Duration::from_secs(3);
 
 /// Listens on every interface, IPv4 and IPv6.
 pub fn listen() -> Result<TcpListener, String> {
@@ -34,23 +39,50 @@ pub fn listen() -> Result<TcpListener, String> {
         .map_err(|error| format!("cannot listen on port {PORT}: {error}"))
 }
 
+/// The calls in progress, by address.
+static CALLERS: Mutex<Vec<IpAddr>> = Mutex::new(Vec::new());
+
+fn callers() -> std::sync::MutexGuard<'static, Vec<IpAddr>> {
+    CALLERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Takes a slot for `ip`; false when all slots, or this address's, are taken.
+fn take_slot(ip: IpAddr) -> bool {
+    let mut callers = callers();
+    if callers.len() >= MAX_CALLS || callers.iter().filter(|known| **known == ip).count() >= MAX_PER_ADDRESS {
+        return false;
+    }
+    callers.push(ip);
+    true
+}
+
+fn free_slot(ip: IpAddr) {
+    let mut callers = callers();
+    if let Some(at) = callers.iter().position(|known| *known == ip) {
+        callers.swap_remove(at);
+    }
+}
+
 pub fn serve(listener: TcpListener, secret: Vec<u8>) {
-    static CALLS: AtomicUsize = AtomicUsize::new(0);
     let secret: &'static [u8] = Box::leak(secret.into_boxed_slice());
-    for stream in listener.incoming().flatten() {
-        if !stream
-            .peer_addr()
-            .is_ok_and(|address| is_local(address.ip()))
-        {
+    for stream in listener.incoming() {
+        let stream = match stream {
+            Ok(stream) => stream,
+            // Out of descriptors, say: wait instead of spinning on accept.
+            Err(_) => {
+                thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+        };
+        let Some(ip) = stream.peer_addr().ok().map(|address| address.ip()).filter(|ip| is_local(*ip)) else {
             continue;
-        }
-        if CALLS.fetch_add(1, Ordering::SeqCst) >= MAX_CALLS {
-            CALLS.fetch_sub(1, Ordering::SeqCst);
+        };
+        if !take_slot(ip) {
             continue;
         }
         thread::spawn(move || {
             handle(stream, secret);
-            CALLS.fetch_sub(1, Ordering::SeqCst);
+            free_slot(ip);
         });
     }
 }
@@ -145,10 +177,14 @@ fn handle(mut stream: TcpStream, secret: &[u8]) {
         respond(&mut stream, secret, "", (400, "Bad Request"), &["error: bad request".into()]);
         return;
     };
-    let Some(command) = PEER_COMMANDS
-        .into_iter()
-        .find(|allowed| *allowed == head.command)
-    else {
+    // `devices=<addresses>` carries its argument in the signed command.
+    let allowed = PEER_COMMANDS.into_iter().find(|allowed| *allowed == head.command).map(str::to_string).or_else(|| {
+        head.command
+            .strip_prefix("devices=")
+            .filter(|list| !list.is_empty() && list.len() <= 200 && list.chars().all(|c| c.is_ascii_hexdigit() || c == '-' || c == ','))
+            .map(|_| head.command.clone())
+    });
+    let Some(command) = allowed.as_deref() else {
         respond(
             &mut stream,
             secret,
@@ -190,7 +226,21 @@ fn handle(mut stream: TcpStream, secret: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_local, parse_head};
+    use super::*;
+
+    #[test]
+    fn one_address_cannot_take_every_slot() {
+        let (a, b): (IpAddr, IpAddr) = ("192.168.1.10".parse().unwrap(), "192.168.1.11".parse().unwrap());
+        let taken = (0..MAX_CALLS).filter(|_| take_slot(a)).count();
+        assert_eq!(taken, MAX_PER_ADDRESS);
+        assert!(take_slot(b));
+        for _ in 0..taken {
+            free_slot(a);
+        }
+        free_slot(b);
+        assert!(take_slot(a));
+        free_slot(a);
+    }
 
     #[test]
     fn reads_the_head() {

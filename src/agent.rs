@@ -72,8 +72,8 @@ const STALE_REQUEST: Duration = Duration::from_secs(10);
 /// Most client connections served at once.
 const MAX_CLIENTS: usize = 16;
 
-/// Longest request line a client may send.
-const MAX_REQUEST: u64 = 64;
+/// Longest request line a client may send (`devices=` with a few addresses).
+const MAX_REQUEST: u64 = 512;
 
 /// Longest a single request may keep the main loop: a hand-over at its worst
 /// (see `client::timeout`) plus a margin. Past this the loop is taken to be
@@ -352,7 +352,7 @@ fn read_request(stream: UnixStream, sender: &Sender<Request>) {
         "ping" => {
             let _ = writeln!(reply, "ok");
         }
-        // Checks that this agent reaches the other one (install.sh runs it).
+        // Checks that this agent reaches the other one (setup runs it).
         // It is the agent that must be allowed on the local network, not the
         // terminal, so the call is made from here.
         "reach" => {
@@ -405,6 +405,26 @@ fn read_request(stream: UnixStream, sender: &Sender<Request>) {
             }
             let _ = writeln!(reply, "ok");
         }
+        // The other Mac's setup chose other devices: take the same, then
+        // restart, so the agent runs on the new config.
+        devices if devices.starts_with("devices=") => {
+            if busy {
+                let _ = writeln!(reply, "{BUSY_REPLY}");
+                return;
+            }
+            match save_devices(&devices["devices=".len()..]) {
+                Ok(()) => {
+                    let _ = writeln!(reply, "ok");
+                    drop(reply);
+                    eprintln!("devices changed by the other Mac; restarting");
+                    thread::sleep(Duration::from_millis(300));
+                    std::process::exit(1);
+                }
+                Err(error) => {
+                    let _ = writeln!(reply, "error: {error}");
+                }
+            }
+        }
         "switch" | "handover" | "arrive" | "monitor" if !claim_busy() => {
             let _ = writeln!(reply, "{BUSY_REPLY}");
         }
@@ -412,6 +432,21 @@ fn read_request(stream: UnixStream, sender: &Sender<Request>) {
             let _ = sender.send(Request { command, reply: Some(reply), received: Instant::now() });
         }
     }
+}
+
+/// Writes the devices the other Mac sent into this Mac's config.
+fn save_devices(list: &str) -> Result<(), String> {
+    let devices = list
+        .split(',')
+        .map(|address| crate::bt::normalize(address).ok_or(format!("bad Bluetooth address {address:?}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if devices.is_empty() || devices.len() > 8 {
+        return Err("expected one to eight devices".into());
+    }
+    let config = Config { devices, ..Config::load()? };
+    let path = config::dir().join("config");
+    let _ = std::fs::copy(&path, config::dir().join("config.bak"));
+    std::fs::write(&path, config.to_text()).map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
 /// True when the client runs as the same user as the agent.
@@ -618,7 +653,7 @@ fn mac_name(role: Role) -> &'static str {
     }
 }
 
-fn other_role(role: Role) -> Role {
+pub fn other_role(role: Role) -> Role {
     match role {
         Role::Mini => Role::MacBook,
         Role::MacBook => Role::Mini,

@@ -1,7 +1,7 @@
 //! The shared secret both agents sign their calls with.
 //!
-//! `~/.monitor-switch/peer_secret` holds 32 random bytes as hex; install.sh
-//! writes the same file on both Macs. A call carries the time, a random nonce
+//! `~/.monitor-switch/peer_secret` holds 32 random bytes as hex; `setup`
+//! agrees on them with the other Mac when it pairs the two (see `pairing`). A call carries the time, a random nonce
 //! and `HMAC-SHA256(secret, "<command>\n<to>\n<time>\n<nonce>")`, where `<to>`
 //! is the role of the Mac it is meant for. The receiving agent accepts it only
 //! when the signature matches for its own role, the time is close to its own
@@ -27,7 +27,7 @@ pub fn load_secret() -> Result<Vec<u8>, String> {
     let path = secret_path();
     let text = std::fs::read_to_string(&path).map_err(|error| {
         format!(
-            "cannot read {} ({error}): run install.sh again",
+            "cannot read {} ({error}): run `monitor-switch setup` on both Macs",
             path.display()
         )
     })?;
@@ -133,11 +133,11 @@ pub fn verify(
 }
 
 /// Compares in constant time.
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     // CommonCrypto is part of libSystem.
     extern "C" {
         fn CCHmac(
@@ -163,6 +163,16 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
             out.as_mut_ptr(),
         )
     };
+    out
+}
+
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    extern "C" {
+        fn CC_SHA256(data: *const u8, length: u32, digest: *mut u8) -> *mut u8;
+    }
+    let mut out = [0u8; 32];
+    // SAFETY: `data` is a live slice and `out` has room for the digest.
+    unsafe { CC_SHA256(data.as_ptr(), data.len() as u32, out.as_mut_ptr()) };
     out
 }
 

@@ -6,14 +6,18 @@ mod bt;
 mod client;
 mod config;
 mod ddc;
+mod ecdh;
 mod hid;
 mod hud;
 #[path = "shared/home.rs"]
 mod home;
+#[path = "shared/hotkey_spec.rs"]
+mod hotkey_spec;
 mod iokit;
 #[path = "shared/logfile.rs"]
 mod logfile;
 mod menu;
+mod pairing;
 mod peer;
 mod server;
 mod setup;
@@ -28,8 +32,9 @@ monitor-switch — share one monitor, keyboard and mouse between two Macs
   monitor-switch status    what this Mac's agent sees
   monitor-switch overview  where the monitor, keyboard and mouse are
   monitor-switch reach     check that this Mac's agent reaches the other one
-  monitor-switch setup     install or update on both Macs (also: setup check,
-                           setup uninstall [--purge])
+  monitor-switch setup     set up this Mac, or change its settings; run it on
+                           both Macs, which pair by a code (also: setup
+                           uninstall [--purge])
   monitor-switch agent     run the background agent (launchd starts it)
 
 Internal: ping, held, state, wake, arrive, handover (one Mac's agent to the

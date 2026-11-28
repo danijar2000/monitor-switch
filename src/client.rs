@@ -17,7 +17,8 @@ pub const PEER_COMMANDS: [&str; 8] =
 /// How long to wait for the agent's answer to `command`.
 pub fn timeout(command: &str) -> Duration {
     match command {
-        "ping" | "held" | "state" | "wake" => Duration::from_secs(5),
+        "ping" | "held" | "state" | "wake" | "devices" => Duration::from_secs(5),
+        devices if devices.starts_with("devices=") => Duration::from_secs(5),
         // Its own `state` and the other Mac's.
         "overview" => Duration::from_secs(15),
         // A `ping` to the other Mac with the margins of that call.

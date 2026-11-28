@@ -22,7 +22,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --release --all-targets -- -D warnings
       - name: Scripts
-        run: zsh -n install.sh && zsh -n get.sh && zsh -n scripts/setup-mac.sh
+        run: zsh -n get.sh
       - name: Build for Apple silicon and Intel
         run: |
           cargo build --locked --release --target aarch64-apple-darwin
@@ -44,8 +44,14 @@ jobs:
             | grep -q '^Identifier=local.monitor-switch$'
           codesign -dv "$dir/bin/monitor-switch" 2>&1 | grep -q '^Info.plist entries='
           codesign --verify --strict "$dir/bin/monitor-switch" "$dir/bin/monitor-switch-hotkey"
-          cp -R launchd scripts README.md install.sh install.conf.example "$dir/"
+          cp README.md "$dir/"
           sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 > "$dir/VERSION"
+          # A tag must name the version in Cargo.toml: the formula and the
+          # embedded Info.plist use that version, the release uses the tag.
+          if [[ $GITHUB_REF == refs/tags/v* && "v$(cat "$dir/VERSION")" != "$GITHUB_REF_NAME" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match version $(cat "$dir/VERSION") in Cargo.toml" >&2
+            exit 1
+          fi
           tar -czf monitor-switch-macos.tar.gz "$dir"
           shasum -a 256 monitor-switch-macos.tar.gz > monitor-switch-macos.tar.gz.sha256
       - name: Homebrew formula

@@ -68,8 +68,6 @@ impl Config {
                     })
                 }
                 "peer" => peer = Some(valid_host(value)?),
-                // Older configs: an ssh destination; only the host is used.
-                "peer_ssh" => peer = Some(valid_host(value.rsplit('@').next().unwrap_or(value))?),
                 "devices" => {
                     devices = value
                         .split(',')
@@ -100,6 +98,25 @@ impl Config {
     }
 }
 
+impl Config {
+    /// The config as `load` reads it.
+    pub fn to_text(&self) -> String {
+        let role = match self.role {
+            Role::MacBook => "macbook",
+            Role::Mini => "mini",
+        };
+        let mut text = format!(
+            "# Written by monitor-switch setup; run it again to change anything.\nrole = {role}\npeer = {}\ndevices = {}\n",
+            self.peer,
+            self.devices.join(", ")
+        );
+        if self.role == Role::Mini {
+            text.push_str(&format!("hdmi_input = {}\n", self.hdmi_input));
+        }
+        text
+    }
+}
+
 /// A host name or address, optionally with `:port`.
 fn valid_host(value: &str) -> Result<String, String> {
     let fine = |c: char| c.is_ascii_alphanumeric() || ".-:%[]".contains(c);
@@ -121,14 +138,20 @@ mod tests {
         let config = Config::parse(GOOD).unwrap();
         assert_eq!(config.role, Role::Mini);
         assert_eq!(config.peer, "mac.local");
-        assert_eq!(Config::parse("role = mini\npeer_ssh = me@b.local\ndevices = 3CA6F6F1D872").unwrap().peer, "b.local");
         assert_eq!(config.devices, ["aa-bb-cc-dd-ee-01", "aa-bb-cc-dd-ee-02"]);
         assert_eq!(config.hdmi_input, 17);
     }
 
     #[test]
+    fn writes_what_it_reads() {
+        let config = Config::parse(GOOD).unwrap();
+        let again = Config::parse(&config.to_text()).unwrap();
+        assert_eq!((again.role, again.peer, again.devices, again.hdmi_input), (config.role, config.peer, config.devices, config.hdmi_input));
+    }
+
+    #[test]
     fn hdmi_input_defaults_to_18() {
-        let config = Config::parse("role = macbook\npeer_ssh = a@b\ndevices = 3CA6F6F1D872").unwrap();
+        let config = Config::parse("role = macbook\npeer = b.local\ndevices = 3CA6F6F1D872").unwrap();
         assert_eq!(config.hdmi_input, 18);
     }
 
@@ -136,12 +159,12 @@ mod tests {
     fn rejects_bad_input() {
         for text in [
             "role = macbook\ndevices = 3CA6F6F1D872",
-            "role = laptop\npeer_ssh = a@b\ndevices = 3CA6F6F1D872",
+            "role = laptop\npeer = b.local\ndevices = 3CA6F6F1D872",
             "role = mini\npeer = -oProxyCommand=x\ndevices = 3CA6F6F1D872",
             "role = mini\npeer = a b\ndevices = 3CA6F6F1D872",
-            "role = mini\npeer_ssh = a@b\ndevices = 12:34",
-            "role = mini\npeer_ssh = a@b\ndevices =",
-            "role = mini\npeer_ssh = a@b\ndevices = 3CA6F6F1D872\nspeed = 2",
+            "role = mini\npeer = b.local\ndevices = 12:34",
+            "role = mini\npeer = b.local\ndevices =",
+            "role = mini\npeer = b.local\ndevices = 3CA6F6F1D872\nspeed = 2",
             "role = mini\njunk line",
         ] {
             assert!(Config::parse(text).is_err(), "accepted {text:?}");

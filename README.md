@@ -17,47 +17,39 @@ Keyboard and Magic Mouse.
 
 ## Install
 
-Before you start:
-
-1. Pair the keyboard and mouse with the Mac you install from.
+1. Pair the keyboard and mouse with one of the Macs.
 2. In the monitor's menu set **Input Select** to **Auto**.
-3. On the **other** Mac turn on **Remote Login** (System Settings → General →
-   Sharing). It is needed only while installing.
-
-### With Homebrew
-
-On either Mac:
+3. On **each** Mac run:
 
 ```sh
 brew install danijar2000/tap/monitor-switch
 monitor-switch setup
 ```
 
-Homebrew is needed only on the Mac you run this on: `monitor-switch setup`
-installs on both Macs.
-
-### Without Homebrew
-
-On either Mac:
+Without Homebrew, run this on each Mac instead:
 
 ```sh
 curl -fsSL https://github.com/danijar2000/monitor-switch/releases/latest/download/get.sh | zsh
 ```
 
-### Then
+4. The two Macs find each other and show a six-digit code. Check that it is
+   the same on both and type **y** on both.
 
-The installer finds the other Mac and the devices, asks what it is unsure
-of, and sets up both Macs. When macOS asks whether **monitor-switch** may use
-**Bluetooth** and the **local network**, click **Allow** on each Mac. After
-every update macOS asks about Bluetooth again.
+That is all: setup finds the keyboard and mouse and the monitor input by
+itself, and asks only when there is a choice. When macOS asks whether
+**monitor-switch** may use **Bluetooth** or the **local network**, click
+**Allow** on each Mac. macOS asks about Bluetooth again after every update.
 
 | | With Homebrew | Without Homebrew |
 |---|---|---|
-| **Update** | `brew upgrade monitor-switch && monitor-switch setup` | run the `curl` line again |
-| **Change settings** | edit `~/.monitor-switch/installer/install.conf`, then `monitor-switch setup` | the same |
-| **Uninstall** | `monitor-switch setup uninstall && brew uninstall monitor-switch` | `~/bin/monitor-switch setup uninstall` |
+| **Update** (on both Macs) | `brew upgrade monitor-switch && monitor-switch setup` | run the `curl` line again |
+| **Change settings** | `monitor-switch setup` | `~/bin/monitor-switch setup` |
+| **Uninstall** (on both Macs) | `monitor-switch setup uninstall && brew uninstall monitor-switch` | `~/bin/monitor-switch setup uninstall` |
 
-`setup uninstall --purge` also deletes the settings and logs.
+Run again, `monitor-switch setup` shows the settings and lets you choose
+the keyboard and mouse again (on both Macs at once), change the hotkeys,
+pair the Macs again or uninstall. `setup uninstall --purge` also deletes the
+settings and logs.
 
 ## Use
 
@@ -92,8 +84,8 @@ launchctl kickstart -k gui/$(id -u)/local.monitor-switch-hotkey
 
 - **"No route to host":** allow **monitor-switch** in System Settings →
   Privacy & Security → Local Network, then run `~/bin/monitor-switch reach`.
-- **"refused: bad signature":** the Macs have different secrets; run the
-  installer again.
+- **"refused: bad signature":** the Macs have different secrets: run
+  `monitor-switch setup` on both and choose **Pair with the other Mac again**.
 - **The mouse stays on the old Mac:** press the hotkey again. If it is on
   neither Mac, connect it by cable for ten seconds.
 
@@ -101,7 +93,9 @@ launchctl kickstart -k gui/$(id -u)/local.monitor-switch-hotkey
 
 A background agent on each Mac does the Bluetooth work and talks to the
 other Mac's agent over HTTP on the home network (port 47811). Every call is
-signed with a secret both Macs share. The Mac giving up the devices unpairs
+signed with a secret both Macs share. Setup agrees on that secret by
+Diffie-Hellman over port 47812, and the code you compare on both Macs
+proves nobody stood in between. The Mac giving up the devices unpairs
 them, and the other Mac pairs them; anything it fails to get is taken back.
 The monitor follows the active signal (Input Select = Auto).
 

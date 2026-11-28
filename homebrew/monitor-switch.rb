@@ -21,9 +21,10 @@ class MonitorSwitch < Formula
 
   def caveats
     <<~EOS
-      Nothing runs yet. Set up both Macs, from either one:
+      Nothing runs yet. Install on both Macs, then run on each:
         monitor-switch setup
-      After `brew upgrade monitor-switch`, run it again to update both Macs.
+      The Macs pair by a code you confirm on both.
+      After `brew upgrade monitor-switch`, run `monitor-switch setup` on both.
       Before `brew uninstall`, run `monitor-switch setup uninstall`.
     EOS
   end
